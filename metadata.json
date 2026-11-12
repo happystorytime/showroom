@@ -1,0 +1,6 @@
+{
+  "name": "Karnataka RTO Agent & Tractor Showroom Management System",
+  "description": "Complete Karnataka RTO agent and tractor showroom business management system with automated client, vehicle, RTO workflow, document, exchange, loan, and financial tracking with Excel download and Google Sheets sync.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
