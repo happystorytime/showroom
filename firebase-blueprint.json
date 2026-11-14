@@ -1,0 +1,319 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "RTO agent workspace owner profile",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "minLength": 3, "maxLength": 254 },
+        "displayName": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "createdAt", "updatedAt"]
+    },
+    "Showroom": {
+      "title": "Showroom",
+      "description": "Partner showroom branch managed by the RTO agent",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "code": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "city": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "address": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "phone": { "type": "string", "minLength": 0, "maxLength": 25 },
+        "managerName": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "rtoJurisdiction": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerUid", "name", "code", "city", "isActive", "createdAt", "updatedAt"]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "Centralized common client record shared across all partner showrooms",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdShowroomId": { "type": "string", "minLength": 0, "maxLength": 64 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "mobile": { "type": "string", "minLength": 10, "maxLength": 20 },
+        "alternateMobile": { "type": "string", "minLength": 0, "maxLength": 20 },
+        "address": { "type": "string", "minLength": 0, "maxLength": 400 },
+        "aadhaar": { "type": "string", "minLength": 0, "maxLength": 20 },
+        "panNumber": { "type": "string", "minLength": 0, "maxLength": 20 },
+        "registrationDate": { "type": "string", "minLength": 8, "maxLength": 20 },
+        "remarks": { "type": "string", "minLength": 0, "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerUid", "name", "mobile", "registrationDate", "createdAt", "updatedAt"]
+    },
+    "Vehicle": {
+      "title": "Vehicle",
+      "description": "Vehicle registered under a centralized client",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "clientId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "vehicleNumber": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "chassisNumber": { "type": "string", "minLength": 0, "maxLength": 60 },
+        "engineNumber": { "type": "string", "minLength": 0, "maxLength": 60 },
+        "vehicleClass": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "model": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "manufacturer": { "type": "string", "minLength": 0, "maxLength": 60 },
+        "manufacturingYear": { "type": "number" },
+        "fuelType": { "type": "string", "enum": ["Diesel", "Petrol", "Electric", "CNG", "Hybrid"] },
+        "ownerName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "registrationDate": { "type": "string", "minLength": 0, "maxLength": 20 },
+        "rcValidity": { "type": "string", "minLength": 0, "maxLength": 20 },
+        "insuranceExpiry": { "type": "string", "minLength": 0, "maxLength": 20 },
+        "hypothecationStatus": { "type": "string", "enum": ["None", "Hypothecated", "Terminated"] },
+        "hypothecationFinancer": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "rtoOffice": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "documentStatus": { "type": "string", "enum": ["Complete", "Pending Verification", "Expired"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "ownerUid",
+        "clientId",
+        "vehicleNumber",
+        "vehicleClass",
+        "fuelType",
+        "ownerName",
+        "hypothecationStatus",
+        "rtoOffice",
+        "documentStatus",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RTOApplication": {
+      "title": "RTOApplication",
+      "description": "Showroom-wise RTO work application linking client, vehicle, showroom, and RTO service category",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "showroomId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "clientId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "vehicleId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "clientName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "vehicleNumber": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "workType": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "applicationNumber": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "rtoOffice": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "applicationDate": { "type": "string", "minLength": 8, "maxLength": 20 },
+        "submissionDate": { "type": "string", "minLength": 0, "maxLength": 20 },
+        "expectedCompletionDate": { "type": "string", "minLength": 0, "maxLength": 20 },
+        "completionDate": { "type": "string", "minLength": 0, "maxLength": 20 },
+        "requiredDocuments": { "type": "array", "description": "Required document checklist categories for this application" },
+        "workStatus": {
+          "type": "string",
+          "enum": ["New", "Documents Pending", "Ready to Submit", "Submitted", "In Process", "Completed", "Rejected", "On Hold"]
+        },
+        "workDescription": { "type": "string", "minLength": 0, "maxLength": 500 },
+        "remarks": { "type": "string", "minLength": 0, "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "ownerUid",
+        "showroomId",
+        "clientId",
+        "vehicleId",
+        "clientName",
+        "vehicleNumber",
+        "workType",
+        "rtoOffice",
+        "applicationDate",
+        "requiredDocuments",
+        "workStatus",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ApplicationHistoryEntry": {
+      "title": "ApplicationHistoryEntry",
+      "description": "Immutable status transition and audit log entry for an RTO application",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "applicationId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "showroomId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "clientId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "vehicleId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "previousStatus": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "newStatus": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "actionSummary": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "note": { "type": "string", "minLength": 0, "maxLength": 500 },
+        "actorEmail": { "type": "string", "minLength": 1, "maxLength": 150 },
+        "changedAt": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "ownerUid",
+        "applicationId",
+        "showroomId",
+        "clientId",
+        "vehicleId",
+        "newStatus",
+        "actionSummary",
+        "actorEmail",
+        "changedAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DocumentRecord": {
+      "title": "DocumentRecord",
+      "description": "Tracked RTO compliance document and uploaded Storage file metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "showroomId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "clientId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "vehicleId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "applicationId": { "type": "string", "minLength": 0, "maxLength": 64 },
+        "vehicleNumber": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "clientName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "documentType": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "documentNumber": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "issueDate": { "type": "string", "minLength": 0, "maxLength": 20 },
+        "expiryDate": { "type": "string", "minLength": 0, "maxLength": 20 },
+        "receivedStatus": { "type": "string", "enum": ["Received", "Missing", "Submitted to RTO", "Returned to Client"] },
+        "verificationStatus": { "type": "string", "enum": ["Verified", "Pending", "Rejected"] },
+        "fileName": { "type": "string", "minLength": 0, "maxLength": 180 },
+        "fileSize": { "type": "number" },
+        "mimeType": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "storagePath": { "type": "string", "minLength": 0, "maxLength": 400 },
+        "downloadUrl": { "type": "string", "minLength": 0, "maxLength": 1200 },
+        "filePathOrReference": { "type": "string", "minLength": 0, "maxLength": 250 },
+        "uploadedAt": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "remarks": { "type": "string", "minLength": 0, "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "ownerUid",
+        "showroomId",
+        "clientId",
+        "vehicleId",
+        "vehicleNumber",
+        "clientName",
+        "documentType",
+        "receivedStatus",
+        "verificationStatus",
+        "filePathOrReference",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ArchivedRecord": {
+      "title": "ArchivedRecord",
+      "description": "Deleted entity safety archive record",
+      "type": "object",
+      "properties": {
+        "archiveId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "showroomId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "entityType": { "type": "string", "enum": ["Client", "Vehicle", "Application", "Document"] },
+        "entityId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 400 },
+        "data": { "type": "object", "description": "Snapshot map of the archived entity" },
+        "deletedAt": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "deletedBy": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "archiveId",
+        "ownerUid",
+        "showroomId",
+        "entityType",
+        "entityId",
+        "summary",
+        "data",
+        "deletedAt",
+        "deletedBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AgencySettings": {
+      "title": "AgencySettings",
+      "description": "RTO agency settings and document checklist configuration",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "businessName": { "type": "string", "minLength": 1, "maxLength": 150 },
+        "tagline": { "type": "string", "minLength": 0, "maxLength": 200 },
+        "address": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "mobile": { "type": "string", "minLength": 0, "maxLength": 30 },
+        "email": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "rtoLicenseNumber": { "type": "string", "minLength": 0, "maxLength": 60 },
+        "rtoOffices": { "type": "array", "description": "Configured Karnataka RTO jurisdictions" },
+        "vehicleClasses": { "type": "array", "description": "Supported vehicle classes" },
+        "workTypes": { "type": "array", "description": "Supported RTO work categories" },
+        "applicationStatuses": { "type": "array", "description": "Allowed RTO application statuses" },
+        "documentChecklistMap": { "type": "object", "description": "Required document categories mapped per RTO work type" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerUid", "businessName", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Agency owner root profile document"
+    },
+    "/users/{userId}/showrooms/{showroomId}": {
+      "schema": { "$ref": "#/entities/Showroom" },
+      "description": "Multi-showroom partner branch records"
+    },
+    "/users/{userId}/clients/{clientId}": {
+      "schema": { "$ref": "#/entities/Client" },
+      "description": "Centralized common client directory shared across all showrooms"
+    },
+    "/users/{userId}/vehicles/{vehicleId}": {
+      "schema": { "$ref": "#/entities/Vehicle" },
+      "description": "Vehicles linked to centralized clients"
+    },
+    "/users/{userId}/applications/{applicationId}": {
+      "schema": { "$ref": "#/entities/RTOApplication" },
+      "description": "Showroom-wise RTO work applications"
+    },
+    "/users/{userId}/applicationHistory/{historyId}": {
+      "schema": { "$ref": "#/entities/ApplicationHistoryEntry" },
+      "description": "Application status transition audit log"
+    },
+    "/users/{userId}/documents/{documentId}": {
+      "schema": { "$ref": "#/entities/DocumentRecord" },
+      "description": "RTO compliance documents and Storage references"
+    },
+    "/users/{userId}/archive/{archiveId}": {
+      "schema": { "$ref": "#/entities/ArchivedRecord" },
+      "description": "Deleted record safety archive"
+    },
+    "/users/{userId}/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/AgencySettings" },
+      "description": "Agency settings and checklist rules"
+    }
+  }
+}

@@ -1,5 +1,12 @@
-import { AppDatabase } from './storage';
-import { maskAadhaar } from './pureCalculations';
+import type { AppDatabase } from './storage';
+import {
+  computeShowroomRtoSummary,
+  evaluateApplicationChecklist,
+  getShowroomLabel,
+  getTodayDateStr,
+  maskAadhaar,
+  maskPAN,
+} from './pureCalculations';
 
 export interface GoogleSheetsSyncResult {
   spreadsheetId: string;
@@ -22,27 +29,23 @@ export async function createAndSyncGoogleSpreadsheet(
 
   const sheetTitles = [
     'DASHBOARD',
+    'SHOWROOMS',
     'CLIENTS',
     'VEHICLES',
     'RTO_APPLICATIONS',
     'DOCUMENTS',
-    'TRACTOR_STOCK',
-    'OLD_TRACTOR_EXCHANGE',
-    'LOANS',
-    'PAYMENTS',
-    'EXPENSES',
+    'APPLICATION_HISTORY',
   ];
 
   if (!spreadsheetId) {
-    // 1. Create a brand new Google Spreadsheet
-    const title = `${db.settings.businessName} - Live Cloud Database`;
+    const title = `${db.settings.businessName} - Live RTO Cloud Database`;
     const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
       method: 'POST',
       headers,
       body: JSON.stringify({
         properties: { title },
         sheets: sheetTitles.map((t) => ({
-          properties: { title: t, gridProperties: { rowCount: 200, columnCount: 20 } },
+          properties: { title: t, gridProperties: { rowCount: 400, columnCount: 20 } },
         })),
       }),
     });
@@ -59,96 +62,235 @@ export async function createAndSyncGoogleSpreadsheet(
     spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
   }
 
-  // 2. Prepare tabular data payloads for each sheet
-  const valueData: { range: string; values: any[][] }[] = [];
+  const todayStr = getTodayDateStr();
+  const valueData: { range: string; values: (string | number)[][] }[] = [];
 
-  // DASHBOARD
-  const totalIncome = db.payments.reduce((a, b) => a + (b.totalPaid || 0), 0);
-  const totalExpense = db.expenses.reduce((a, b) => a + (b.amount || 0), 0);
-  const netProfit = totalIncome - totalExpense;
-  const totalOutstanding = db.applications.reduce((a, b) => a + (b.balanceAmount || 0), 0);
+  const completedCount = db.applications.filter((a) => a.workStatus === 'Completed').length;
+  const inProcessCount = db.applications.filter(
+    (a) => a.workStatus === 'In Process' || a.workStatus === 'Submitted'
+  ).length;
+  const pendingCount = db.applications.filter(
+    (a) =>
+      a.workStatus === 'New' ||
+      a.workStatus === 'Documents Pending' ||
+      a.workStatus === 'Ready to Submit' ||
+      a.workStatus === 'On Hold'
+  ).length;
+  const missingDocApps = db.applications.filter(
+    (a) =>
+      a.workStatus !== 'Completed' &&
+      a.workStatus !== 'Rejected' &&
+      evaluateApplicationChecklist(a, db.documents, db.settings).status === 'Documents Incomplete'
+  ).length;
 
   valueData.push({
-    range: 'DASHBOARD!A1:G15',
+    range: 'DASHBOARD!A1:E12',
     values: [
-      [db.settings.businessName, '', '', '', '', '', ''],
-      [`Last Synced: ${new Date().toLocaleString()}`, '', '', '', '', '', ''],
-      ['BUSINESS OVERVIEW', '', '', 'FINANCIAL OVERVIEW', '', '', ''],
-      ['Metric', 'Value', '', 'Metric', 'Amount (INR)', '', ''],
-      ['Total Clients', db.clients.length, '', 'Total Billed Revenue', db.applications.reduce((a, b) => a + (b.totalFees || 0), 0)],
-      ['Total Vehicles', db.vehicles.length, '', 'Total Received Income', totalIncome],
-      ['Total Tractor Stock', db.tractors.length, '', 'Total Business Expenses', totalExpense],
-      ['Total RTO Applications', db.applications.length, '', 'Net Business Profit', netProfit],
-      ['Completed Works', db.applications.filter((a) => a.workStatus === 'Completed').length, '', 'Total Outstanding Balance', totalOutstanding],
-      ['Pending Works', db.applications.filter((a) => a.workStatus === 'Pending' || a.workStatus === 'New').length, '', 'Total Advance Collected', db.payments.reduce((a, b) => a + (b.advancePayment || 0), 0)],
-      ['Processing Works', db.applications.filter((a) => a.workStatus === 'Processing').length, '', 'Total Tractor Loans', db.loans.reduce((a, b) => a + (b.loanAmount || 0), 0)],
+      [db.settings.businessName, '', '', '', ''],
+      [`Last Synced: ${new Date().toLocaleString()}`, '', '', '', ''],
+      ['RTO OPERATIONS SUMMARY', '', '', 'DOCUMENT COMPLIANCE', ''],
+      ['Metric', 'Count', '', 'Metric', 'Count'],
+      ['Total Common Clients', db.clients.length, '', 'Total Tracked Documents', db.documents.length],
+      ['Total Vehicles', db.vehicles.length, '', 'Verified Documents', db.documents.filter((d) => d.verificationStatus === 'Verified').length],
+      ['Partner Showrooms', db.showrooms.length, '', 'Pending Verification', db.documents.filter((d) => d.verificationStatus === 'Pending').length],
+      ['Total RTO Applications', db.applications.length, '', 'Apps Missing Documents', missingDocApps],
+      ['Completed Applications', completedCount, '', 'Rejected Applications', db.applications.filter((a) => a.workStatus === 'Rejected').length],
+      ['Submitted / In Process', inProcessCount, '', 'New / Pending / Hold', pendingCount],
     ],
   });
 
-  // CLIENTS
+  const branchSummaries = computeShowroomRtoSummary(db.showrooms, db, todayStr);
+  const showroomRows = [
+    [
+      'Showroom ID',
+      'Code',
+      'Name',
+      'City',
+      'Manager',
+      'Phone',
+      'RTO Jurisdiction',
+      'Status',
+      'Clients Served',
+      'Vehicles Served',
+      'Total RTO Apps',
+      'In Process',
+      'Completed',
+      'Missing Docs Apps',
+    ],
+    ...branchSummaries.map((b) => [
+      b.showroom.id,
+      b.showroom.code,
+      b.showroom.name,
+      b.showroom.city,
+      b.showroom.managerName,
+      b.showroom.phone,
+      b.showroom.rtoJurisdiction,
+      b.showroom.isActive ? 'Active' : 'Inactive',
+      b.uniqueClientsCount,
+      b.uniqueVehiclesCount,
+      b.applicationsCount,
+      b.inProcessCount,
+      b.completedCount,
+      b.missingDocsAppsCount,
+    ]),
+  ];
+  valueData.push({ range: `SHOWROOMS!A1:N${showroomRows.length}`, values: showroomRows });
+
   const clientRows = [
-    ['Client ID', 'Client Name', 'Mobile Number', 'Alternate Number', 'Address', 'Aadhaar (Masked)', 'Registration Date', 'Remarks'],
-    ...db.clients.map((c) => [c.id, c.name, c.mobile, c.alternateMobile, c.address, maskAadhaar(c.aadhaar), c.registrationDate, c.remarks]),
+    ['Client ID', 'Full Name', 'Mobile', 'Alternate Mobile', 'Address', 'Aadhaar (Masked)', 'PAN (Masked)', 'Reg Date', 'Origin Branch', 'Remarks'],
+    ...db.clients.map((c) => [
+      c.id,
+      c.name,
+      c.mobile,
+      c.alternateMobile,
+      c.address,
+      maskAadhaar(c.aadhaar),
+      maskPAN(c.panNumber),
+      c.registrationDate,
+      c.createdShowroomId ? getShowroomLabel(db.showrooms, c.createdShowroomId) : 'Common',
+      c.remarks,
+    ]),
   ];
-  valueData.push({ range: `CLIENTS!A1:H${clientRows.length}`, values: clientRows });
+  valueData.push({ range: `CLIENTS!A1:J${clientRows.length}`, values: clientRows });
 
-  // VEHICLES
   const vehRows = [
-    ['Vehicle ID', 'Client ID', 'Vehicle Number', 'Owner Name', 'Vehicle Type', 'Brand', 'Model', 'Mfg Year', 'Chassis', 'Engine', 'Fuel', 'Reg Date', 'RC Validity', 'Insurance Expiry', 'Status'],
-    ...db.vehicles.map((v) => [v.id, v.clientId, v.vehicleNumber, v.ownerName, v.vehicleType, v.brand, v.model, v.manufacturingYear, v.chassisNumber, v.engineNumber, v.fuelType, v.registrationDate, v.rcValidity, v.insuranceExpiry, v.documentStatus]),
+    [
+      'Vehicle ID',
+      'Client ID',
+      'Reg Number',
+      'Owner Name',
+      'Vehicle Class',
+      'Manufacturer',
+      'Model',
+      'Year',
+      'Fuel Type',
+      'Chassis',
+      'Engine',
+      'Reg Date',
+      'RC Validity',
+      'Insurance Validity',
+      'Hypothecation',
+      'RTO Office',
+      'Doc Status',
+    ],
+    ...db.vehicles.map((v) => [
+      v.id,
+      v.clientId,
+      v.vehicleNumber,
+      v.ownerName,
+      v.vehicleClass,
+      v.manufacturer,
+      v.model,
+      v.manufacturingYear,
+      v.fuelType,
+      v.chassisNumber,
+      v.engineNumber,
+      v.registrationDate,
+      v.rcValidity,
+      v.insuranceExpiry,
+      v.hypothecationStatus,
+      v.rtoOffice,
+      v.documentStatus,
+    ]),
   ];
-  valueData.push({ range: `VEHICLES!A1:O${vehRows.length}`, values: vehRows });
+  valueData.push({ range: `VEHICLES!A1:Q${vehRows.length}`, values: vehRows });
 
-  // RTO_APPLICATIONS
   const appRows = [
-    ['Application ID', 'Client ID', 'Vehicle ID', 'Client Name', 'Vehicle Number', 'Work Type', 'App Number', 'RTO Office', 'App Date', 'Submission Date', 'Expected Completion', 'Total Fees', 'Advance Paid', 'Balance Amount', 'Status', 'Remarks'],
-    ...db.applications.map((a) => [a.id, a.clientId, a.vehicleId, a.clientName, a.vehicleNumber, a.workType, a.applicationNumber, a.rtoOffice, a.applicationDate, a.submissionDate, a.expectedCompletionDate, a.totalFees, a.advancePaid, a.balanceAmount, a.workStatus, a.remarks]),
+    [
+      'Application ID',
+      'Showroom',
+      'Client ID',
+      'Client Name',
+      'Vehicle ID',
+      'Vehicle Number',
+      'Work Category',
+      'Govt App No',
+      'RTO Office',
+      'App Date',
+      'Submission Date',
+      'Expected Completion',
+      'Completion Date',
+      'Status',
+      'Checklist',
+      'Remarks',
+    ],
+    ...db.applications.map((a) => {
+      const evalRes = evaluateApplicationChecklist(a, db.documents, db.settings);
+      return [
+        a.id,
+        getShowroomLabel(db.showrooms, a.showroomId),
+        a.clientId,
+        a.clientName,
+        a.vehicleId,
+        a.vehicleNumber,
+        a.workType,
+        a.applicationNumber,
+        a.rtoOffice,
+        a.applicationDate,
+        a.submissionDate,
+        a.expectedCompletionDate,
+        a.completionDate || '',
+        a.workStatus,
+        `${evalRes.status} (${evalRes.uploaded.length}/${evalRes.required.length})`,
+        a.remarks,
+      ];
+    }),
   ];
   valueData.push({ range: `RTO_APPLICATIONS!A1:P${appRows.length}`, values: appRows });
 
-  // DOCUMENTS
   const docRows = [
-    ['Document ID', 'Client ID', 'Vehicle ID', 'Vehicle Number', 'Client Name', 'Document Type', 'Document Number', 'Issue Date', 'Expiry Date', 'Received Status', 'Verification Status', 'Reference', 'Remarks'],
-    ...db.documents.map((d) => [d.id, d.clientId, d.vehicleId, d.vehicleNumber, d.clientName, d.documentType, d.documentNumber, d.issueDate, d.expiryDate, d.receivedStatus, d.verificationStatus, d.filePathOrReference, d.remarks]),
+    [
+      'Document ID',
+      'Showroom',
+      'Application ID',
+      'Client ID',
+      'Client Name',
+      'Vehicle Number',
+      'Document Category',
+      'Doc Number',
+      'Issue Date',
+      'Expiry Date',
+      'Custody Status',
+      'Verification',
+      'File Name',
+      'File Link / Reference',
+      'Remarks',
+    ],
+    ...db.documents.map((d) => [
+      d.id,
+      getShowroomLabel(db.showrooms, d.showroomId),
+      d.applicationId || '',
+      d.clientId,
+      d.clientName,
+      d.vehicleNumber,
+      d.documentType,
+      d.documentNumber,
+      d.issueDate,
+      d.expiryDate,
+      d.receivedStatus,
+      d.verificationStatus,
+      d.fileName || '',
+      d.downloadUrl || d.filePathOrReference,
+      d.remarks,
+    ]),
   ];
-  valueData.push({ range: `DOCUMENTS!A1:M${docRows.length}`, values: docRows });
+  valueData.push({ range: `DOCUMENTS!A1:O${docRows.length}`, values: docRows });
 
-  // TRACTOR_STOCK
-  const trcRows = [
-    ['Tractor ID', 'Reg Number', 'Brand', 'Model', 'Mfg Year', 'Chassis', 'Engine', 'Owner/Cust', 'Mobile', 'RC Status', 'Insurance Status', 'Purchase Date', 'Stock Status', 'Price', 'Delivery Date', 'Delivery Status', 'Remarks'],
-    ...db.tractors.map((t) => [t.id, t.registrationNumber, t.brand, t.model, t.manufacturingYear, t.chassisNumber, t.engineNumber, t.ownerName, t.customerMobile || '', t.rcStatus, t.insuranceStatus, t.purchaseDate, t.stockStatus, t.price, t.deliveryDate || '', t.deliveryStatus || '', t.remarks || '']),
+  const historyRows = [
+    ['History ID', 'Application ID', 'Showroom', 'Previous Status', 'New Status', 'Summary', 'Note', 'Timestamp'],
+    ...db.applicationHistory.map((h) => [
+      h.id,
+      h.applicationId,
+      getShowroomLabel(db.showrooms, h.showroomId),
+      h.previousStatus || '—',
+      h.newStatus,
+      h.actionSummary,
+      h.note,
+      h.changedAt,
+    ]),
   ];
-  valueData.push({ range: `TRACTOR_STOCK!A1:Q${trcRows.length}`, values: trcRows });
+  valueData.push({ range: `APPLICATION_HISTORY!A1:H${historyRows.length}`, values: historyRows });
 
-  // OLD_TRACTOR_EXCHANGE
-  const excRows = [
-    ['Exchange ID', 'Customer Name', 'Mobile', 'Old Tractor Number', 'Old Model', 'Old Chassis', 'Old Engine', 'Old Owner', 'Old Valuation', 'Exchange Date', 'New Model', 'New Tractor Number', 'New Price', 'Difference Amount', 'Remarks'],
-    ...db.exchanges.map((e) => [e.id, e.customerName, e.customerMobile, e.oldTractorNumber, e.oldTractorModel, e.oldChassisNumber, e.oldEngineNumber, e.oldTractorOwner, e.oldTractorValuation, e.exchangeDate, e.newTractorModel, e.newTractorNumber, e.newTractorPrice, e.exchangeDifferenceAmount, e.remarks]),
-  ];
-  valueData.push({ range: `OLD_TRACTOR_EXCHANGE!A1:O${excRows.length}`, values: excRows });
-
-  // LOANS
-  const loanRows = [
-    ['Loan ID', 'Customer Name', 'Mobile', 'Tractor Number', 'Finance Company', 'Loan Amount', 'Doc Charges', 'Net Credit', 'Status', 'Login Date', 'Approval Date', 'Disbursement Date', 'First Payment', 'Hold Amount', 'Pending Amount', 'Closure Status', 'Remarks'],
-    ...db.loans.map((l) => [l.id, l.customerName, l.customerMobile, l.tractorNumber, l.financeCompany, l.loanAmount, l.documentCharges, l.netCreditAmount, l.loanStatus, l.loginDate, l.approvalDate || '', l.disbursementDate || '', l.firstPayment, l.holdAmount, l.pendingAmount, l.accountClosureStatus, l.remarks || '']),
-  ];
-  valueData.push({ range: `LOANS!A1:Q${loanRows.length}`, values: loanRows });
-
-  // PAYMENTS
-  const payRows = [
-    ['Transaction ID', 'Date', 'Client ID', 'Client Name', 'Vehicle Number', 'Application ID', 'Payment Type', 'Total Fees', 'Advance Payment', 'Additional Payment', 'Total Paid', 'Balance', 'Mode', 'Reference', 'Remarks'],
-    ...db.payments.map((p) => [p.id, p.date, p.clientId, p.clientName, p.vehicleNumber, p.applicationId, p.paymentType, p.totalFees, p.advancePayment, p.additionalPayment, p.totalPaid, p.balanceAmount, p.paymentMode, p.transactionReference, p.remarks]),
-  ];
-  valueData.push({ range: `PAYMENTS!A1:O${payRows.length}`, values: payRows });
-
-  // EXPENSES
-  const expRows = [
-    ['Expense ID', 'Date', 'Category', 'Description', 'Amount', 'Payment Mode', 'Remarks'],
-    ...db.expenses.map((e) => [e.id, e.date, e.category, e.description, e.amount, e.paymentMode, e.remarks]),
-  ];
-  valueData.push({ range: `EXPENSES!A1:G${expRows.length}`, values: expRows });
-
-  // 3. Batch Update values in Google Sheets
   const batchRes = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
     {

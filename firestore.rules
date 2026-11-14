@@ -1,0 +1,439 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Global Hardened Primitives
+    // -------------------------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidStr(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isValidStringArray(arr, maxLen) {
+      return arr is list && arr.size() <= maxLen && (arr.size() == 0 || arr[0] is string);
+    }
+
+    function hasValidServerTimestampsCreate(data) {
+      return data.createdAt == request.time && data.updatedAt == request.time;
+    }
+
+    function hasValidServerTimestampsUpdate(data) {
+      return data.createdAt == existing().createdAt && data.updatedAt == request.time;
+    }
+
+    function showroomExistsAfter(userId, showroomId) {
+      return isValidId(showroomId) && existsAfter(/databases/$(database)/documents/users/$(userId)/showrooms/$(showroomId));
+    }
+
+    // -------------------------------------------------------------------------
+    // Entity Validation Blueprints (RTO-Only Multi-Showroom Architecture)
+    // -------------------------------------------------------------------------
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'displayName', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidStr(data.uid, 1, 128)
+        && isValidStr(data.email, 3, 254)
+        && (!('displayName' in data) || isValidStr(data.displayName, 0, 120));
+    }
+
+    function isValidShowroom(data, userId) {
+      return data.keys().hasAll(['id', 'ownerUid', 'name', 'code', 'city', 'isActive', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'ownerUid', 'name', 'code', 'city', 'address', 'phone', 'managerName', 'rtoJurisdiction', 'isActive', 'createdAt', 'updatedAt'])
+        && data.ownerUid == userId
+        && isValidId(data.id)
+        && isValidStr(data.ownerUid, 1, 128)
+        && isValidStr(data.name, 1, 120)
+        && isValidStr(data.code, 1, 20)
+        && isValidStr(data.city, 1, 80)
+        && data.isActive is bool
+        && (!('address' in data) || isValidStr(data.address, 0, 300))
+        && (!('phone' in data) || isValidStr(data.phone, 0, 25))
+        && (!('managerName' in data) || isValidStr(data.managerName, 0, 80))
+        && (!('rtoJurisdiction' in data) || isValidStr(data.rtoJurisdiction, 0, 120));
+    }
+
+    // Centralized Common Client (shared across all showrooms; optional createdShowroomId)
+    function isValidClient(data, userId) {
+      return data.keys().hasAll(['id', 'ownerUid', 'name', 'mobile', 'registrationDate', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'ownerUid', 'createdShowroomId', 'name', 'mobile', 'alternateMobile',
+          'address', 'aadhaar', 'panNumber', 'registrationDate', 'remarks', 'createdAt', 'updatedAt'
+        ])
+        && data.ownerUid == userId
+        && isValidId(data.id)
+        && isValidStr(data.ownerUid, 1, 128)
+        && isValidStr(data.name, 1, 120)
+        && isValidStr(data.mobile, 10, 20)
+        && isValidStr(data.registrationDate, 8, 20)
+        && (!('createdShowroomId' in data) || isValidId(data.createdShowroomId))
+        && (!('alternateMobile' in data) || isValidStr(data.alternateMobile, 0, 20))
+        && (!('address' in data) || isValidStr(data.address, 0, 400))
+        && (!('aadhaar' in data) || isValidStr(data.aadhaar, 0, 20))
+        && (!('panNumber' in data) || isValidStr(data.panNumber, 0, 20))
+        && (!('remarks' in data) || isValidStr(data.remarks, 0, 500));
+    }
+
+    // Centralized Vehicle linked to a Common Client
+    function isValidVehicle(data, userId) {
+      return data.keys().hasAll([
+          'id', 'ownerUid', 'clientId', 'vehicleNumber', 'vehicleClass', 'fuelType',
+          'ownerName', 'hypothecationStatus', 'rtoOffice', 'documentStatus', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerUid', 'clientId', 'vehicleNumber', 'chassisNumber', 'engineNumber',
+          'vehicleClass', 'model', 'manufacturer', 'manufacturingYear', 'fuelType', 'ownerName',
+          'registrationDate', 'rcValidity', 'insuranceExpiry', 'hypothecationStatus',
+          'hypothecationFinancer', 'rtoOffice', 'documentStatus', 'createdAt', 'updatedAt'
+        ])
+        && data.ownerUid == userId
+        && isValidId(data.id)
+        && isValidStr(data.ownerUid, 1, 128)
+        && isValidId(data.clientId)
+        && isValidStr(data.vehicleNumber, 1, 40)
+        && isValidStr(data.vehicleClass, 1, 60)
+        && data.fuelType in ['Diesel', 'Petrol', 'Electric', 'CNG', 'Hybrid']
+        && isValidStr(data.ownerName, 1, 120)
+        && data.hypothecationStatus in ['None', 'Hypothecated', 'Terminated']
+        && isValidStr(data.rtoOffice, 1, 120)
+        && data.documentStatus in ['Complete', 'Pending Verification', 'Expired']
+        && (!('chassisNumber' in data) || isValidStr(data.chassisNumber, 0, 60))
+        && (!('engineNumber' in data) || isValidStr(data.engineNumber, 0, 60))
+        && (!('model' in data) || isValidStr(data.model, 0, 80))
+        && (!('manufacturer' in data) || isValidStr(data.manufacturer, 0, 60))
+        && (!('manufacturingYear' in data) || data.manufacturingYear is number)
+        && (!('registrationDate' in data) || isValidStr(data.registrationDate, 0, 20))
+        && (!('rcValidity' in data) || isValidStr(data.rcValidity, 0, 20))
+        && (!('insuranceExpiry' in data) || isValidStr(data.insuranceExpiry, 0, 20))
+        && (!('hypothecationFinancer' in data) || isValidStr(data.hypothecationFinancer, 0, 100));
+    }
+
+    function isValidRTOApplication(data, userId) {
+      return data.keys().hasAll([
+          'id', 'ownerUid', 'showroomId', 'clientId', 'vehicleId', 'clientName', 'vehicleNumber',
+          'workType', 'rtoOffice', 'applicationDate', 'requiredDocuments', 'workStatus', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerUid', 'showroomId', 'clientId', 'vehicleId', 'clientName', 'vehicleNumber',
+          'workType', 'applicationNumber', 'rtoOffice', 'applicationDate', 'submissionDate',
+          'expectedCompletionDate', 'completionDate', 'requiredDocuments', 'workStatus',
+          'workDescription', 'remarks', 'createdAt', 'updatedAt'
+        ])
+        && data.ownerUid == userId
+        && isValidId(data.id)
+        && isValidStr(data.ownerUid, 1, 128)
+        && isValidId(data.showroomId)
+        && isValidId(data.clientId)
+        && isValidId(data.vehicleId)
+        && isValidStr(data.clientName, 1, 120)
+        && isValidStr(data.vehicleNumber, 1, 40)
+        && isValidStr(data.workType, 1, 80)
+        && isValidStr(data.rtoOffice, 1, 120)
+        && isValidStr(data.applicationDate, 8, 20)
+        && isValidStringArray(data.requiredDocuments, 15)
+        && data.workStatus in ['New', 'Documents Pending', 'Ready to Submit', 'Submitted', 'In Process', 'Completed', 'Rejected', 'On Hold']
+        && (!('applicationNumber' in data) || isValidStr(data.applicationNumber, 0, 80))
+        && (!('submissionDate' in data) || isValidStr(data.submissionDate, 0, 20))
+        && (!('expectedCompletionDate' in data) || isValidStr(data.expectedCompletionDate, 0, 20))
+        && (!('completionDate' in data) || isValidStr(data.completionDate, 0, 20))
+        && (!('workDescription' in data) || isValidStr(data.workDescription, 0, 500))
+        && (!('remarks' in data) || isValidStr(data.remarks, 0, 500));
+    }
+
+    function isValidApplicationHistory(data, userId) {
+      return data.keys().hasAll([
+          'id', 'ownerUid', 'applicationId', 'showroomId', 'clientId', 'vehicleId',
+          'newStatus', 'actionSummary', 'actorEmail', 'changedAt', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerUid', 'applicationId', 'showroomId', 'clientId', 'vehicleId',
+          'previousStatus', 'newStatus', 'actionSummary', 'note', 'actorEmail', 'changedAt',
+          'createdAt', 'updatedAt'
+        ])
+        && data.ownerUid == userId
+        && isValidId(data.id)
+        && isValidStr(data.ownerUid, 1, 128)
+        && isValidId(data.applicationId)
+        && isValidId(data.showroomId)
+        && isValidId(data.clientId)
+        && isValidId(data.vehicleId)
+        && data.newStatus in ['New', 'Documents Pending', 'Ready to Submit', 'Submitted', 'In Process', 'Completed', 'Rejected', 'On Hold']
+        && isValidStr(data.actionSummary, 1, 200)
+        && isValidStr(data.actorEmail, 1, 150)
+        && isValidStr(data.changedAt, 1, 40)
+        && (!('previousStatus' in data) || isValidStr(data.previousStatus, 0, 40))
+        && (!('note' in data) || isValidStr(data.note, 0, 500));
+    }
+
+    function isValidDocument(data, userId) {
+      return data.keys().hasAll([
+          'id', 'ownerUid', 'showroomId', 'clientId', 'vehicleId', 'vehicleNumber', 'clientName',
+          'documentType', 'receivedStatus', 'verificationStatus', 'filePathOrReference', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerUid', 'showroomId', 'clientId', 'vehicleId', 'applicationId',
+          'vehicleNumber', 'clientName', 'documentType', 'documentNumber', 'issueDate', 'expiryDate',
+          'receivedStatus', 'verificationStatus', 'fileName', 'fileSize', 'mimeType', 'storagePath',
+          'downloadUrl', 'filePathOrReference', 'uploadedAt', 'remarks', 'createdAt', 'updatedAt'
+        ])
+        && data.ownerUid == userId
+        && isValidId(data.id)
+        && isValidStr(data.ownerUid, 1, 128)
+        && isValidId(data.showroomId)
+        && isValidId(data.clientId)
+        && isValidId(data.vehicleId)
+        && isValidStr(data.vehicleNumber, 1, 40)
+        && isValidStr(data.clientName, 1, 120)
+        && isValidStr(data.documentType, 1, 60)
+        && data.receivedStatus in ['Received', 'Missing', 'Submitted to RTO', 'Returned to Client']
+        && data.verificationStatus in ['Verified', 'Pending', 'Rejected']
+        && isValidStr(data.filePathOrReference, 0, 250)
+        && (!('applicationId' in data) || isValidId(data.applicationId))
+        && (!('documentNumber' in data) || isValidStr(data.documentNumber, 0, 80))
+        && (!('issueDate' in data) || isValidStr(data.issueDate, 0, 20))
+        && (!('expiryDate' in data) || isValidStr(data.expiryDate, 0, 20))
+        && (!('fileName' in data) || isValidStr(data.fileName, 0, 180))
+        && (!('fileSize' in data) || (data.fileSize is number && data.fileSize >= 0 && data.fileSize <= 10485760))
+        && (!('mimeType' in data) || isValidStr(data.mimeType, 0, 100))
+        && (!('storagePath' in data) || isValidStr(data.storagePath, 0, 400))
+        && (!('downloadUrl' in data) || isValidStr(data.downloadUrl, 0, 1200))
+        && (!('uploadedAt' in data) || isValidStr(data.uploadedAt, 0, 40))
+        && (!('remarks' in data) || isValidStr(data.remarks, 0, 500));
+    }
+
+    function isValidArchive(data, userId) {
+      return data.keys().hasAll(['archiveId', 'ownerUid', 'showroomId', 'entityType', 'entityId', 'summary', 'data', 'deletedAt', 'deletedBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['archiveId', 'ownerUid', 'showroomId', 'entityType', 'entityId', 'summary', 'data', 'deletedAt', 'deletedBy', 'createdAt', 'updatedAt'])
+        && data.ownerUid == userId
+        && isValidId(data.archiveId)
+        && isValidStr(data.ownerUid, 1, 128)
+        && isValidId(data.showroomId)
+        && data.entityType in ['Client', 'Vehicle', 'Application', 'Document']
+        && isValidStr(data.entityId, 1, 64)
+        && isValidStr(data.summary, 1, 400)
+        && data.data is map && data.data.keys().size() >= 1 && data.data.keys().size() <= 40
+        && isValidStr(data.deletedAt, 1, 60)
+        && isValidStr(data.deletedBy, 1, 120);
+    }
+
+    function isValidSettings(data, userId) {
+      return data.keys().hasAll(['id', 'ownerUid', 'businessName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'ownerUid', 'businessName', 'tagline', 'address', 'mobile', 'email',
+          'rtoLicenseNumber', 'rtoOffices', 'vehicleClasses', 'workTypes',
+          'applicationStatuses', 'documentChecklistMap', 'createdAt', 'updatedAt'
+        ])
+        && data.ownerUid == userId
+        && isValidId(data.id)
+        && isValidStr(data.ownerUid, 1, 128)
+        && isValidStr(data.businessName, 1, 150)
+        && (!('tagline' in data) || isValidStr(data.tagline, 0, 200))
+        && (!('address' in data) || isValidStr(data.address, 0, 300))
+        && (!('mobile' in data) || isValidStr(data.mobile, 0, 30))
+        && (!('email' in data) || isValidStr(data.email, 0, 120))
+        && (!('rtoLicenseNumber' in data) || isValidStr(data.rtoLicenseNumber, 0, 60))
+        && (!('rtoOffices' in data) || isValidStringArray(data.rtoOffices, 60))
+        && (!('vehicleClasses' in data) || isValidStringArray(data.vehicleClasses, 30))
+        && (!('workTypes' in data) || isValidStringArray(data.workTypes, 40))
+        && (!('applicationStatuses' in data) || isValidStringArray(data.applicationStatuses, 20))
+        && (!('documentChecklistMap' in data) || (data.documentChecklistMap is map && data.documentChecklistMap.keys().size() <= 30));
+    }
+
+    // -------------------------------------------------------------------------
+    // User Workspace Root & Subcollections
+    // -------------------------------------------------------------------------
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow create: if isValidId(userId) && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && hasValidServerTimestampsCreate(incoming());
+      allow update: if isValidId(userId) && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && hasValidServerTimestampsUpdate(incoming())
+        && incoming().uid == existing().uid
+        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'updatedAt']);
+
+      // Partner Showrooms
+      match /showrooms/{showroomId} {
+        allow get: if isValidId(showroomId) && isOwner(userId);
+        allow list: if isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+        allow create: if isValidId(showroomId) && isOwner(userId)
+          && isValidShowroom(incoming(), userId)
+          && incoming().id == showroomId
+          && hasValidServerTimestampsCreate(incoming());
+        allow update: if isValidId(showroomId) && isOwner(userId)
+          && isValidShowroom(incoming(), userId)
+          && hasValidServerTimestampsUpdate(incoming())
+          && incoming().id == existing().id
+          && incoming().ownerUid == existing().ownerUid
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'code', 'city', 'address', 'phone', 'managerName', 'rtoJurisdiction', 'isActive', 'updatedAt'
+          ]);
+        allow delete: if isValidId(showroomId) && isOwner(userId);
+      }
+
+      // Centralized Common Clients
+      match /clients/{clientId} {
+        allow get: if isValidId(clientId) && isOwner(userId);
+        allow list: if isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+        allow create: if isValidId(clientId) && isOwner(userId)
+          && isValidClient(incoming(), userId)
+          && incoming().id == clientId
+          && (!('createdShowroomId' in incoming()) || showroomExistsAfter(userId, incoming().createdShowroomId))
+          && hasValidServerTimestampsCreate(incoming());
+        allow update: if isValidId(clientId) && isOwner(userId)
+          && isValidClient(incoming(), userId)
+          && hasValidServerTimestampsUpdate(incoming())
+          && incoming().id == existing().id
+          && incoming().ownerUid == existing().ownerUid
+          && (!('createdShowroomId' in incoming()) || incoming().createdShowroomId == existing().get('createdShowroomId', '') || showroomExistsAfter(userId, incoming().createdShowroomId))
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'createdShowroomId', 'name', 'mobile', 'alternateMobile', 'address', 'aadhaar', 'panNumber', 'registrationDate', 'remarks', 'updatedAt'
+          ]);
+        allow delete: if isValidId(clientId) && isOwner(userId);
+      }
+
+      // Centralized Vehicles linked to Common Clients
+      match /vehicles/{vehicleId} {
+        allow get: if isValidId(vehicleId) && isOwner(userId);
+        allow list: if isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+        allow create: if isValidId(vehicleId) && isOwner(userId)
+          && isValidVehicle(incoming(), userId)
+          && incoming().id == vehicleId
+          && hasValidServerTimestampsCreate(incoming());
+        allow update: if isValidId(vehicleId) && isOwner(userId)
+          && isValidVehicle(incoming(), userId)
+          && hasValidServerTimestampsUpdate(incoming())
+          && incoming().id == existing().id
+          && incoming().ownerUid == existing().ownerUid
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'clientId', 'vehicleNumber', 'chassisNumber', 'engineNumber', 'vehicleClass', 'model',
+            'manufacturer', 'manufacturingYear', 'fuelType', 'ownerName', 'registrationDate',
+            'rcValidity', 'insuranceExpiry', 'hypothecationStatus', 'hypothecationFinancer',
+            'rtoOffice', 'documentStatus', 'updatedAt'
+          ]);
+        allow delete: if isValidId(vehicleId) && isOwner(userId);
+      }
+
+      // Showroom-wise RTO Applications (with Terminal State Locking)
+      match /applications/{applicationId} {
+        allow get: if isValidId(applicationId) && isOwner(userId);
+        allow list: if isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+        allow create: if isValidId(applicationId) && isOwner(userId)
+          && isValidRTOApplication(incoming(), userId)
+          && incoming().id == applicationId
+          && showroomExistsAfter(userId, incoming().showroomId)
+          && hasValidServerTimestampsCreate(incoming());
+        allow update: if isValidId(applicationId) && isOwner(userId)
+          && isValidRTOApplication(incoming(), userId)
+          && hasValidServerTimestampsUpdate(incoming())
+          && incoming().id == existing().id
+          && incoming().ownerUid == existing().ownerUid
+          && (incoming().showroomId == existing().showroomId || showroomExistsAfter(userId, incoming().showroomId))
+          && (
+            (existing().workStatus != 'Completed' && existing().workStatus != 'Rejected' &&
+             incoming().diff(existing()).affectedKeys().hasOnly([
+               'showroomId', 'clientName', 'vehicleNumber', 'workType', 'applicationNumber',
+               'rtoOffice', 'applicationDate', 'submissionDate', 'expectedCompletionDate',
+               'completionDate', 'requiredDocuments', 'workStatus', 'workDescription', 'remarks', 'updatedAt'
+             ])) ||
+            (incoming().diff(existing()).affectedKeys().hasOnly(['remarks', 'updatedAt']))
+          );
+        allow delete: if isValidId(applicationId) && isOwner(userId);
+      }
+
+      // Immutable Application History Audit Trail
+      match /applicationHistory/{historyId} {
+        allow get: if isValidId(historyId) && isOwner(userId);
+        allow list: if isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+        allow create: if isValidId(historyId) && isOwner(userId)
+          && isValidApplicationHistory(incoming(), userId)
+          && incoming().id == historyId
+          && showroomExistsAfter(userId, incoming().showroomId)
+          && hasValidServerTimestampsCreate(incoming());
+        allow delete: if isValidId(historyId) && isOwner(userId);
+      }
+
+      // RTO Compliance Documents & Storage Metadata
+      match /documents/{documentId} {
+        allow get: if isValidId(documentId) && isOwner(userId);
+        allow list: if isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+        allow create: if isValidId(documentId) && isOwner(userId)
+          && isValidDocument(incoming(), userId)
+          && incoming().id == documentId
+          && showroomExistsAfter(userId, incoming().showroomId)
+          && hasValidServerTimestampsCreate(incoming());
+        allow update: if isValidId(documentId) && isOwner(userId)
+          && isValidDocument(incoming(), userId)
+          && hasValidServerTimestampsUpdate(incoming())
+          && incoming().id == existing().id
+          && incoming().ownerUid == existing().ownerUid
+          && (incoming().showroomId == existing().showroomId || showroomExistsAfter(userId, incoming().showroomId))
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'showroomId', 'applicationId', 'documentType', 'documentNumber', 'issueDate', 'expiryDate',
+            'receivedStatus', 'verificationStatus', 'fileName', 'fileSize', 'mimeType', 'storagePath',
+            'downloadUrl', 'filePathOrReference', 'uploadedAt', 'remarks', 'updatedAt'
+          ]);
+        allow delete: if isValidId(documentId) && isOwner(userId);
+      }
+
+      // Archive
+      match /archive/{archiveId} {
+        allow get: if isValidId(archiveId) && isOwner(userId);
+        allow list: if isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+        allow create: if isValidId(archiveId) && isOwner(userId)
+          && isValidArchive(incoming(), userId)
+          && incoming().archiveId == archiveId
+          && hasValidServerTimestampsCreate(incoming());
+        allow delete: if isValidId(archiveId) && isOwner(userId);
+      }
+
+      // Agency Settings & Document Checklist Rules
+      match /settings/{settingId} {
+        allow get: if isValidId(settingId) && isOwner(userId);
+        allow list: if isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+        allow create: if isValidId(settingId) && isOwner(userId)
+          && isValidSettings(incoming(), userId)
+          && incoming().id == settingId
+          && hasValidServerTimestampsCreate(incoming());
+        allow update: if isValidId(settingId) && isOwner(userId)
+          && isValidSettings(incoming(), userId)
+          && hasValidServerTimestampsUpdate(incoming())
+          && incoming().id == existing().id
+          && incoming().ownerUid == existing().ownerUid
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'businessName', 'tagline', 'address', 'mobile', 'email', 'rtoLicenseNumber',
+            'rtoOffices', 'vehicleClasses', 'workTypes', 'applicationStatuses',
+            'documentChecklistMap', 'updatedAt'
+          ]);
+        allow delete: if isValidId(settingId) && isOwner(userId);
+      }
+    }
+  }
+}

@@ -1,657 +1,540 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Users,
   Car,
-  Tractor,
-  FileText,
+  ClipboardList,
   CheckCircle2,
   Clock,
-  RefreshCw,
-  TrendingUp,
-  TrendingDown,
-  DollarSign,
   AlertTriangle,
-  Calendar,
-  ArrowRight,
-  ShieldAlert,
-  CreditCard,
   FileWarning,
-  Sparkles,
+  CalendarClock,
+  Plus,
+  Building2,
+  ArrowUpRight,
 } from 'lucide-react';
-import { AppDatabase } from '../utils/storage';
-import { TimeFilter } from '../types';
+import type {
+  Client,
+  DocumentRecord,
+  RTOApplication,
+  Showroom,
+  SystemSettings,
+  TimeFilter,
+  Vehicle,
+} from '../types';
 import {
-  formatINR,
-  isDateWithinFilter,
+  computeShowroomRtoSummary,
+  evaluateApplicationChecklist,
+  filterByShowroom,
   getDocumentAlertStatus,
+  getShowroomLabel,
+  getTodayDateStr,
+  isDateWithinFilter,
   isOverdue,
 } from '../utils/pureCalculations';
-import { ActiveTab } from './Navbar';
+import type { AppTab } from './Navbar';
 
 interface DashboardProps {
-  db: AppDatabase;
-  onNavigate: (tab: ActiveTab) => void;
-  onRefresh: () => void;
-  currentDateStr: string;
+  showrooms: Showroom[];
+  activeShowroomId: string;
+  onShowroomChange: (id: string) => void;
+  clients: Client[]; // Centralized common clients
+  vehicles: Vehicle[]; // Centralized vehicles
+  applications: RTOApplication[];
+  documents: DocumentRecord[];
+  settings: SystemSettings;
+  onNavigate: (tab: AppTab) => void;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
-  db,
+  showrooms,
+  activeShowroomId,
+  onShowroomChange,
+  clients,
+  vehicles,
+  applications,
+  documents,
+  settings,
   onNavigate,
-  onRefresh,
-  currentDateStr,
 }) => {
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('all');
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const todayStr = getTodayDateStr();
 
-  const handleRefreshClick = () => {
-    setIsRefreshing(true);
-    onRefresh();
-    setTimeout(() => setIsRefreshing(false), 500);
+  const scopedApps = useMemo(() => {
+    const byBranch = filterByShowroom(applications, activeShowroomId);
+    return byBranch.filter((a) => isDateWithinFilter(a.applicationDate, timeFilter, todayStr));
+  }, [applications, activeShowroomId, timeFilter, todayStr]);
+
+  const scopedDocs = useMemo(
+    () => filterByShowroom(documents, activeShowroomId),
+    [documents, activeShowroomId]
+  );
+
+  const stats = useMemo(() => {
+    const completed = scopedApps.filter((a) => a.workStatus === 'Completed').length;
+    const inProcess = scopedApps.filter(
+      (a) => a.workStatus === 'In Process' || a.workStatus === 'Submitted'
+    ).length;
+    const pending = scopedApps.filter(
+      (a) =>
+        a.workStatus === 'New' ||
+        a.workStatus === 'Documents Pending' ||
+        a.workStatus === 'Ready to Submit' ||
+        a.workStatus === 'On Hold'
+    ).length;
+    const rejected = scopedApps.filter((a) => a.workStatus === 'Rejected').length;
+    const submittedToday = filterByShowroom(applications, activeShowroomId).filter(
+      (a) => a.submissionDate === todayStr || a.applicationDate === todayStr
+    ).length;
+
+    const missingDocsApps = scopedApps.filter((a) => {
+      if (a.workStatus === 'Completed' || a.workStatus === 'Rejected') return false;
+      return evaluateApplicationChecklist(a, documents, settings).status === 'Documents Incomplete';
+    }).length;
+
+    const overdueApps = scopedApps.filter((a) =>
+      isOverdue(a.expectedCompletionDate, a.workStatus, todayStr)
+    ).length;
+
+    const expiringVehicles = vehicles.filter((v) => {
+      const ins = getDocumentAlertStatus(v.insuranceExpiry, todayStr);
+      const rc = getDocumentAlertStatus(v.rcValidity, todayStr);
+      return ins === 'expired' || ins === 'expiring_soon' || rc === 'expired' || rc === 'expiring_soon';
+    });
+
+    return {
+      totalClients: clients.length,
+      totalVehicles: vehicles.length,
+      totalApps: scopedApps.length,
+      completed,
+      inProcess,
+      pending,
+      rejected,
+      submittedToday,
+      missingDocsApps,
+      overdueApps,
+      expiringVehicles,
+      totalDocs: scopedDocs.length,
+    };
+  }, [scopedApps, applications, activeShowroomId, todayStr, documents, settings, vehicles, clients.length, scopedDocs.length]);
+
+  const showroomSummaries = useMemo(
+    () => computeShowroomRtoSummary(showrooms, { applications, documents, settings }, todayStr),
+    [showrooms, applications, documents, settings, todayStr]
+  );
+
+  const recentApps = useMemo(
+    () =>
+      [...scopedApps]
+        .sort((a, b) => (b.applicationDate || '').localeCompare(a.applicationDate || ''))
+        .slice(0, 6),
+    [scopedApps]
+  );
+
+  const recentClients = useMemo(
+    () =>
+      [...clients]
+        .sort((a, b) => (b.registrationDate || '').localeCompare(a.registrationDate || ''))
+        .slice(0, 5),
+    [clients]
+  );
+
+  const pendingQueue = useMemo(
+    () =>
+      scopedApps
+        .filter((a) => a.workStatus !== 'Completed' && a.workStatus !== 'Rejected')
+        .sort((a, b) => (a.expectedCompletionDate || '9999').localeCompare(b.expectedCompletionDate || '9999'))
+        .slice(0, 6),
+    [scopedApps]
+  );
+
+  const statusBadgeClass = (status: string) => {
+    switch (status) {
+      case 'Completed':
+        return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+      case 'In Process':
+      case 'Submitted':
+        return 'bg-blue-50 text-blue-700 border-blue-200';
+      case 'Documents Pending':
+      case 'On Hold':
+        return 'bg-amber-50 text-amber-700 border-amber-200';
+      case 'Rejected':
+        return 'bg-red-50 text-red-700 border-red-200';
+      default:
+        return 'bg-slate-100 text-slate-700 border-slate-200';
+    }
   };
 
-  // Filtered RTO applications
-  const filteredApps = db.applications.filter((a) =>
-    isDateWithinFilter(a.applicationDate, timeFilter, currentDateStr)
-  );
-
-  // Filtered Payments
-  const filteredPayments = db.payments.filter((p) =>
-    isDateWithinFilter(p.date, timeFilter, currentDateStr)
-  );
-
-  // Filtered Expenses
-  const filteredExpenses = db.expenses.filter((e) =>
-    isDateWithinFilter(e.date, timeFilter, currentDateStr)
-  );
-
-  // Business Overview Metrics
-  const totalClients = db.clients.length;
-  const totalVehicles = db.vehicles.length;
-  const totalTractors = db.tractors.length;
-  const totalApplications = filteredApps.length;
-  const completedApps = filteredApps.filter((a) => a.workStatus === 'Completed').length;
-  const pendingApps = filteredApps.filter((a) => a.workStatus === 'Pending').length;
-  const processingApps = filteredApps.filter((a) => a.workStatus === 'Processing').length;
-  const todayEntries = db.applications.filter((a) => a.applicationDate === currentDateStr).length;
-
-  // Financial Overview Metrics
-  const totalIncome = filteredPayments.reduce((acc, p) => acc + (p.totalPaid || 0), 0);
-  const totalExpenses = filteredExpenses.reduce((acc, e) => acc + (e.amount || 0), 0);
-  const netProfit = totalIncome - totalExpenses;
-  const totalOutstanding = filteredApps.reduce((acc, a) => acc + (a.balanceAmount || 0), 0);
-  const totalAdvance = filteredPayments.reduce((acc, p) => acc + (p.advancePayment || 0), 0);
-
-  const todayCollection = db.payments
-    .filter((p) => p.date === currentDateStr)
-    .reduce((acc, p) => acc + (p.totalPaid || 0), 0);
-
-  const monthlyCollection = db.payments
-    .filter((p) => isDateWithinFilter(p.date, 'month', currentDateStr))
-    .reduce((acc, p) => acc + (p.totalPaid || 0), 0);
-
-  // Document & Compliance Alerts
-  const expiredInsuranceCount = db.vehicles.filter(
-    (v) => getDocumentAlertStatus(v.insuranceExpiry, currentDateStr) === 'expired'
-  ).length;
-
-  const expiringInsuranceCount = db.vehicles.filter(
-    (v) => getDocumentAlertStatus(v.insuranceExpiry, currentDateStr) === 'expiring_soon'
-  ).length;
-
-  const expiredRCCount = db.vehicles.filter(
-    (v) => getDocumentAlertStatus(v.rcValidity, currentDateStr) === 'expired'
-  ).length;
-
-  const expiringRCCount = db.vehicles.filter(
-    (v) => getDocumentAlertStatus(v.rcValidity, currentDateStr) === 'expiring_soon'
-  ).length;
-
-  const pendingDocumentsCount = db.documents.filter(
-    (d) => d.receivedStatus === 'Missing' || d.verificationStatus === 'Pending'
-  ).length;
-
-  const overdueAppsCount = db.applications.filter((a) =>
-    isOverdue(a.expectedCompletionDate, a.workStatus, currentDateStr)
-  ).length;
-
-  const pendingPaymentsCount = db.applications.filter((a) => a.balanceAmount > 0).length;
-
   return (
-    <div className="space-y-6 pb-16 pt-2">
-      {/* Top Banner & Control Bar */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h2 className="text-xl font-bold text-slate-900 tracking-tight">
-              Executive Business Overview & Control Hub
-            </h2>
-            <span className="bg-emerald-100 text-emerald-800 text-xs font-semibold px-2.5 py-0.5 rounded-full flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse"></span>
-              Live Database Connected
-            </span>
-          </div>
-          <p className="text-xs text-slate-500 mt-1">
-            Real-time RTO workflow monitoring, tractor showroom sales, finance ledger and compliance expiry alerts.
-          </p>
+    <div className="space-y-6">
+      {/* Top Toolbar: Time Filter + Primary CTA */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 mr-1">
+            Period:
+          </span>
+          {(['all', 'today', 'week', 'month'] as TimeFilter[]).map((tf) => (
+            <button
+              key={tf}
+              type="button"
+              onClick={() => setTimeFilter(tf)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold capitalize transition-colors ${
+                timeFilter === tf
+                  ? 'bg-slate-900 text-white'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900'
+              }`}
+            >
+              {tf === 'all' ? 'All Time' : tf === 'today' ? 'Today' : tf === 'week' ? 'Last 7 Days' : 'This Month'}
+            </button>
+          ))}
         </div>
 
-        {/* Date Filter & Refresh Button */}
-        <div className="flex items-center gap-2.5 flex-wrap">
-          <div className="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs font-medium">
-            <Calendar className="w-3.5 h-3.5 text-slate-500 ml-1.5 mr-1" />
-            <button
-              onClick={() => setTimeFilter('all')}
-              className={`px-2.5 py-1 rounded-md transition ${
-                timeFilter === 'all' ? 'bg-white shadow-xs text-blue-700 font-bold' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              All Time
-            </button>
-            <button
-              onClick={() => setTimeFilter('today')}
-              className={`px-2.5 py-1 rounded-md transition ${
-                timeFilter === 'today' ? 'bg-white shadow-xs text-blue-700 font-bold' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Today
-            </button>
-            <button
-              onClick={() => setTimeFilter('week')}
-              className={`px-2.5 py-1 rounded-md transition ${
-                timeFilter === 'week' ? 'bg-white shadow-xs text-blue-700 font-bold' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              This Week
-            </button>
-            <button
-              onClick={() => setTimeFilter('month')}
-              className={`px-2.5 py-1 rounded-md transition ${
-                timeFilter === 'month' ? 'bg-white shadow-xs text-blue-700 font-bold' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              This Month
-            </button>
-          </div>
-
+        <div className="flex items-center gap-2">
           <button
-            onClick={handleRefreshClick}
-            className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-medium shadow-xs transition cursor-pointer"
-            title="Recalculate metrics and reload fresh database"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-            <span>Refresh Dashboard</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Quick Navigation Action Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2.5">
-        <button
-          onClick={() => onNavigate('data-entry')}
-          className="bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-lg flex flex-col items-center justify-center text-center text-xs font-semibold shadow-xs transition group cursor-pointer"
-        >
-          <span className="w-7 h-7 rounded-full bg-blue-500/50 flex items-center justify-center mb-1 group-hover:scale-110 transition">
-            +
-          </span>
-          <span>New Entry Form</span>
-        </button>
-        <button
-          onClick={() => onNavigate('clients')}
-          className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 p-3 rounded-lg flex flex-col items-center justify-center text-center text-xs font-medium shadow-xs transition group cursor-pointer"
-        >
-          <Users className="w-5 h-5 text-blue-600 mb-1 group-hover:scale-110 transition" />
-          <span>Client Database</span>
-        </button>
-        <button
-          onClick={() => onNavigate('vehicles')}
-          className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 p-3 rounded-lg flex flex-col items-center justify-center text-center text-xs font-medium shadow-xs transition group cursor-pointer"
-        >
-          <Car className="w-5 h-5 text-emerald-600 mb-1 group-hover:scale-110 transition" />
-          <span>Vehicle Master</span>
-        </button>
-        <button
-          onClick={() => onNavigate('rto-work')}
-          className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 p-3 rounded-lg flex flex-col items-center justify-center text-center text-xs font-medium shadow-xs transition group cursor-pointer"
-        >
-          <FileText className="w-5 h-5 text-indigo-600 mb-1 group-hover:scale-110 transition" />
-          <span>RTO Applications</span>
-        </button>
-        <button
-          onClick={() => onNavigate('tractor-showroom')}
-          className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 p-3 rounded-lg flex flex-col items-center justify-center text-center text-xs font-medium shadow-xs transition group cursor-pointer"
-        >
-          <Tractor className="w-5 h-5 text-amber-600 mb-1 group-hover:scale-110 transition" />
-          <span>Tractor Inventory</span>
-        </button>
-        <button
-          onClick={() => onNavigate('payments')}
-          className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 p-3 rounded-lg flex flex-col items-center justify-center text-center text-xs font-medium shadow-xs transition group cursor-pointer"
-        >
-          <CreditCard className="w-5 h-5 text-violet-600 mb-1 group-hover:scale-110 transition" />
-          <span>Payment Ledger</span>
-        </button>
-        <button
-          onClick={() => onNavigate('reports')}
-          className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 p-3 rounded-lg flex flex-col items-center justify-center text-center text-xs font-medium shadow-xs transition group cursor-pointer"
-        >
-          <Sparkles className="w-5 h-5 text-rose-600 mb-1 group-hover:scale-110 transition" />
-          <span>Automated Reports</span>
-        </button>
-      </div>
-
-      {/* SECTION 1: BUSINESS OVERVIEW */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-blue-600"></span>
-            01. Business Operations Overview
-          </h3>
-          <span className="text-xs text-slate-500 font-medium">
-            Active Records in Master Database
-          </span>
-        </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-          {/* Total Clients */}
-          <div
-            onClick={() => onNavigate('clients')}
-            className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs hover:border-blue-400 transition cursor-pointer"
-          >
-            <div className="flex items-center justify-between text-slate-400">
-              <span className="text-[11px] font-semibold uppercase text-slate-500">Clients</span>
-              <Users className="w-4 h-4 text-blue-600" />
-            </div>
-            <div className="text-xl font-bold text-slate-900 mt-2">{totalClients}</div>
-            <div className="text-[10px] text-slate-500 mt-0.5">Registered Owners</div>
-          </div>
-
-          {/* Total Vehicles */}
-          <div
-            onClick={() => onNavigate('vehicles')}
-            className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs hover:border-emerald-400 transition cursor-pointer"
-          >
-            <div className="flex items-center justify-between text-slate-400">
-              <span className="text-[11px] font-semibold uppercase text-slate-500">Vehicles</span>
-              <Car className="w-4 h-4 text-emerald-600" />
-            </div>
-            <div className="text-xl font-bold text-slate-900 mt-2">{totalVehicles}</div>
-            <div className="text-[10px] text-slate-500 mt-0.5">Enrolled Assets</div>
-          </div>
-
-          {/* Total Tractors */}
-          <div
-            onClick={() => onNavigate('tractor-showroom')}
-            className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs hover:border-amber-400 transition cursor-pointer"
-          >
-            <div className="flex items-center justify-between text-slate-400">
-              <span className="text-[11px] font-semibold uppercase text-slate-500">Tractors</span>
-              <Tractor className="w-4 h-4 text-amber-600" />
-            </div>
-            <div className="text-xl font-bold text-slate-900 mt-2">{totalTractors}</div>
-            <div className="text-[10px] text-slate-500 mt-0.5">Showroom Stock</div>
-          </div>
-
-          {/* Total Applications */}
-          <div
-            onClick={() => onNavigate('rto-work')}
-            className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs hover:border-indigo-400 transition cursor-pointer"
-          >
-            <div className="flex items-center justify-between text-slate-400">
-              <span className="text-[11px] font-semibold uppercase text-slate-500">RTO Apps</span>
-              <FileText className="w-4 h-4 text-indigo-600" />
-            </div>
-            <div className="text-xl font-bold text-slate-900 mt-2">{totalApplications}</div>
-            <div className="text-[10px] text-slate-500 mt-0.5">Work Files</div>
-          </div>
-
-          {/* Completed Applications */}
-          <div
-            onClick={() => onNavigate('rto-work')}
-            className="bg-white p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/20 shadow-xs hover:border-emerald-400 transition cursor-pointer"
-          >
-            <div className="flex items-center justify-between text-emerald-600">
-              <span className="text-[11px] font-semibold uppercase text-emerald-700">Completed</span>
-              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-            </div>
-            <div className="text-xl font-bold text-emerald-700 mt-2">{completedApps}</div>
-            <div className="text-[10px] text-emerald-600 mt-0.5">Delivered RC/Permit</div>
-          </div>
-
-          {/* Processing Applications */}
-          <div
-            onClick={() => onNavigate('rto-work')}
-            className="bg-white p-3.5 rounded-xl border border-blue-200 bg-blue-50/20 shadow-xs hover:border-blue-400 transition cursor-pointer"
-          >
-            <div className="flex items-center justify-between text-blue-600">
-              <span className="text-[11px] font-semibold uppercase text-blue-700">Processing</span>
-              <RefreshCw className="w-4 h-4 text-blue-600" />
-            </div>
-            <div className="text-xl font-bold text-blue-700 mt-2">{processingApps}</div>
-            <div className="text-[10px] text-blue-600 mt-0.5">At RTO Counter</div>
-          </div>
-
-          {/* Pending Applications */}
-          <div
-            onClick={() => onNavigate('rto-work')}
-            className="bg-white p-3.5 rounded-xl border border-amber-200 bg-amber-50/20 shadow-xs hover:border-amber-400 transition cursor-pointer"
-          >
-            <div className="flex items-center justify-between text-amber-600">
-              <span className="text-[11px] font-semibold uppercase text-amber-700">Pending</span>
-              <Clock className="w-4 h-4 text-amber-600" />
-            </div>
-            <div className="text-xl font-bold text-amber-700 mt-2">{pendingApps}</div>
-            <div className="text-[10px] text-amber-600 mt-0.5">Doc Verification</div>
-          </div>
-
-          {/* Today's New Entries */}
-          <div
-            onClick={() => onNavigate('data-entry')}
-            className="bg-white p-3.5 rounded-xl border border-purple-200 bg-purple-50/20 shadow-xs hover:border-purple-400 transition cursor-pointer"
-          >
-            <div className="flex items-center justify-between text-purple-600">
-              <span className="text-[11px] font-semibold uppercase text-purple-700">Today New</span>
-              <Calendar className="w-4 h-4 text-purple-600" />
-            </div>
-            <div className="text-xl font-bold text-purple-700 mt-2">{todayEntries}</div>
-            <div className="text-[10px] text-purple-600 mt-0.5">Logged Today</div>
-          </div>
-        </div>
-      </div>
-
-      {/* SECTION 2: FINANCIAL OVERVIEW */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-600"></span>
-            02. Financial Overview & Revenue Cash Ledger
-          </h3>
-          <span className="text-xs text-slate-500 font-medium">
-            Calculated Automatically from Payments & Expenses
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {/* Total Income */}
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase text-slate-500">Total Income (Collections)</span>
-              <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg">
-                <TrendingUp className="w-5 h-5" />
-              </div>
-            </div>
-            <div className="text-2xl font-black text-slate-900 mt-2">{formatINR(totalIncome)}</div>
-            <div className="text-xs text-emerald-600 font-medium mt-1 flex items-center gap-1">
-              <span>Includes advance & stage clearance</span>
-            </div>
-          </div>
-
-          {/* Total Expenses */}
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase text-slate-500">Total Expenses</span>
-              <div className="p-2 bg-rose-50 text-rose-600 rounded-lg">
-                <TrendingDown className="w-5 h-5" />
-              </div>
-            </div>
-            <div className="text-2xl font-black text-slate-900 mt-2">{formatINR(totalExpenses)}</div>
-            <div className="text-xs text-rose-600 font-medium mt-1">
-              Salaries, challans, fuel & office costs
-            </div>
-          </div>
-
-          {/* Net Profit */}
-          <div className="bg-gradient-to-br from-slate-900 to-blue-950 text-white p-4 rounded-xl shadow-md">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase text-slate-300">Net Business Profit</span>
-              <div className="p-2 bg-white/10 text-emerald-400 rounded-lg">
-                <DollarSign className="w-5 h-5" />
-              </div>
-            </div>
-            <div className="text-2xl font-black text-white mt-2">{formatINR(netProfit)}</div>
-            <div className="text-xs text-emerald-300 font-medium mt-1">
-              Total Income - Total Expenses
-            </div>
-          </div>
-
-          {/* Total Outstanding */}
-          <div className="bg-white p-4 rounded-xl border border-rose-200 bg-rose-50/20 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase text-rose-700">Total Outstanding Balance</span>
-              <div className="p-2 bg-rose-100 text-rose-600 rounded-lg">
-                <AlertTriangle className="w-5 h-5" />
-              </div>
-            </div>
-            <div className="text-2xl font-black text-rose-700 mt-2">{formatINR(totalOutstanding)}</div>
-            <div className="text-xs text-rose-600 font-medium mt-1">
-              Pending fee clearance from clients
-            </div>
-          </div>
-        </div>
-
-        {/* Supplementary Collections Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
-          <div className="bg-slate-50 border border-slate-200 p-3 rounded-lg flex items-center justify-between text-xs">
-            <span className="text-slate-600 font-medium">Today's Collection:</span>
-            <span className="font-bold text-slate-900">{formatINR(todayCollection)}</span>
-          </div>
-          <div className="bg-slate-50 border border-slate-200 p-3 rounded-lg flex items-center justify-between text-xs">
-            <span className="text-slate-600 font-medium">This Month's Collection:</span>
-            <span className="font-bold text-slate-900">{formatINR(monthlyCollection)}</span>
-          </div>
-          <div className="bg-slate-50 border border-slate-200 p-3 rounded-lg flex items-center justify-between text-xs">
-            <span className="text-slate-600 font-medium">Total Advance Payments Held:</span>
-            <span className="font-bold text-blue-700">{formatINR(totalAdvance)}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* SECTION 3: DOCUMENT ALERTS & COMPLIANCE RADAR */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-rose-600"></span>
-            03. Critical Document & Compliance Alerts
-          </h3>
-          <button
-            onClick={() => onNavigate('alerts')}
-            className="text-xs text-blue-600 hover:text-blue-800 font-semibold flex items-center gap-1 cursor-pointer"
-          >
-            <span>Open Reminders & Alerts Hub</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
-          {/* Expired Insurance */}
-          <div
-            onClick={() => onNavigate('alerts')}
-            className="bg-white p-3 rounded-xl border border-rose-300 bg-rose-50/40 shadow-xs hover:border-rose-500 transition cursor-pointer"
-          >
-            <div className="flex items-center justify-between text-rose-600">
-              <span className="text-[10px] font-bold uppercase">Expired Insurance</span>
-              <ShieldAlert className="w-4 h-4 text-rose-600" />
-            </div>
-            <div className="text-xl font-bold text-rose-700 mt-1">{expiredInsuranceCount}</div>
-            <div className="text-[10px] text-rose-600">RED = Overdue</div>
-          </div>
-
-          {/* Insurance Expiring Soon */}
-          <div
-            onClick={() => onNavigate('alerts')}
-            className="bg-white p-3 rounded-xl border border-amber-300 bg-amber-50/40 shadow-xs hover:border-amber-500 transition cursor-pointer"
-          >
-            <div className="flex items-center justify-between text-amber-600">
-              <span className="text-[10px] font-bold uppercase">Ins Expiring Soon</span>
-              <Clock className="w-4 h-4 text-amber-600" />
-            </div>
-            <div className="text-xl font-bold text-amber-700 mt-1">{expiringInsuranceCount}</div>
-            <div className="text-[10px] text-amber-600">YELLOW = &lt; 30 Days</div>
-          </div>
-
-          {/* Expired RC */}
-          <div
-            onClick={() => onNavigate('alerts')}
-            className="bg-white p-3 rounded-xl border border-rose-300 bg-rose-50/40 shadow-xs hover:border-rose-500 transition cursor-pointer"
-          >
-            <div className="flex items-center justify-between text-rose-600">
-              <span className="text-[10px] font-bold uppercase">Expired RC</span>
-              <FileWarning className="w-4 h-4 text-rose-600" />
-            </div>
-            <div className="text-xl font-bold text-rose-700 mt-1">{expiredRCCount}</div>
-            <div className="text-[10px] text-rose-600">Needs FC Renewal</div>
-          </div>
-
-          {/* RC Expiring Soon */}
-          <div
-            onClick={() => onNavigate('alerts')}
-            className="bg-white p-3 rounded-xl border border-amber-300 bg-amber-50/40 shadow-xs hover:border-amber-500 transition cursor-pointer"
-          >
-            <div className="flex items-center justify-between text-amber-600">
-              <span className="text-[10px] font-bold uppercase">RC Expiring Soon</span>
-              <Clock className="w-4 h-4 text-amber-600" />
-            </div>
-            <div className="text-xl font-bold text-amber-700 mt-1">{expiringRCCount}</div>
-            <div className="text-[10px] text-amber-600">Within 30 Days</div>
-          </div>
-
-          {/* Overdue Applications */}
-          <div
-            onClick={() => onNavigate('alerts')}
-            className="bg-white p-3 rounded-xl border border-rose-300 bg-rose-50/40 shadow-xs hover:border-rose-500 transition cursor-pointer"
-          >
-            <div className="flex items-center justify-between text-rose-600">
-              <span className="text-[10px] font-bold uppercase">Overdue RTO Apps</span>
-              <AlertTriangle className="w-4 h-4 text-rose-600" />
-            </div>
-            <div className="text-xl font-bold text-rose-700 mt-1">{overdueAppsCount}</div>
-            <div className="text-[10px] text-rose-600">Target Date Passed</div>
-          </div>
-
-          {/* Missing Documents */}
-          <div
+            type="button"
             onClick={() => onNavigate('documents')}
-            className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs hover:border-slate-400 transition cursor-pointer"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
           >
-            <div className="flex items-center justify-between text-slate-500">
-              <span className="text-[10px] font-bold uppercase">Pending Documents</span>
-              <FileText className="w-4 h-4 text-slate-600" />
-            </div>
-            <div className="text-xl font-bold text-slate-800 mt-1">{pendingDocumentsCount}</div>
-            <div className="text-[10px] text-slate-500">Form 29/30/Challans</div>
-          </div>
-
-          {/* Pending Payments */}
-          <div
-            onClick={() => onNavigate('payments')}
-            className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs hover:border-slate-400 transition cursor-pointer"
+            <FileWarning className="h-4 w-4 text-amber-600" />
+            <span>Missing Docs ({stats.missingDocsApps})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('data-entry')}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-blue-700"
           >
-            <div className="flex items-center justify-between text-slate-500">
-              <span className="text-[10px] font-bold uppercase">Pending Balance</span>
-              <CreditCard className="w-4 h-4 text-slate-600" />
-            </div>
-            <div className="text-xl font-bold text-slate-800 mt-1">{pendingPaymentsCount}</div>
-            <div className="text-[10px] text-slate-500">Applications Due</div>
-          </div>
+            <Plus className="h-4 w-4" />
+            <span>New RTO Work</span>
+          </button>
         </div>
       </div>
 
-      {/* SECTION 4: RECENT ACTIVITY LOG & RTO WORK PROGRESS */}
+      {/* KPI Row 1: Registry & RTO Pipeline */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <button
+          type="button"
+          onClick={() => onNavigate('clients')}
+          className="text-left rounded-xl border border-slate-200 bg-white p-4 hover:border-blue-300 transition-colors"
+        >
+          <div className="flex items-center justify-between text-slate-500">
+            <span className="text-xs font-semibold">Common Clients</span>
+            <Users className="h-4 w-4 text-blue-600" />
+          </div>
+          <p className="mt-2 font-display text-2xl font-bold text-slate-900 tabular-nums">
+            {stats.totalClients}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">Shared across all showrooms</p>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onNavigate('vehicles')}
+          className="text-left rounded-xl border border-slate-200 bg-white p-4 hover:border-blue-300 transition-colors"
+        >
+          <div className="flex items-center justify-between text-slate-500">
+            <span className="text-xs font-semibold">Registered Vehicles</span>
+            <Car className="h-4 w-4 text-indigo-600" />
+          </div>
+          <p className="mt-2 font-display text-2xl font-bold text-slate-900 tabular-nums">
+            {stats.totalVehicles}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">RC & Insurance tracked</p>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onNavigate('rto-work')}
+          className="text-left rounded-xl border border-slate-200 bg-white p-4 hover:border-blue-300 transition-colors"
+        >
+          <div className="flex items-center justify-between text-slate-500">
+            <span className="text-xs font-semibold">RTO Applications</span>
+            <ClipboardList className="h-4 w-4 text-sky-600" />
+          </div>
+          <p className="mt-2 font-display text-2xl font-bold text-slate-900 tabular-nums">
+            {stats.totalApps}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {stats.submittedToday} submitted today
+          </p>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onNavigate('rto-work')}
+          className="text-left rounded-xl border border-slate-200 bg-white p-4 hover:border-emerald-300 transition-colors"
+        >
+          <div className="flex items-center justify-between text-slate-500">
+            <span className="text-xs font-semibold">Completed Works</span>
+            <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+          </div>
+          <p className="mt-2 font-display text-2xl font-bold text-emerald-700 tabular-nums">
+            {stats.completed}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {stats.inProcess} submitted / in process
+          </p>
+        </button>
+      </div>
+
+      {/* KPI Row 2: Pending / Alerts / Verification */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="rounded-xl border border-slate-200 bg-white p-4">
+          <div className="flex items-center justify-between text-slate-500">
+            <span className="text-xs font-semibold">Pending / Hold</span>
+            <Clock className="h-4 w-4 text-amber-600" />
+          </div>
+          <p className="mt-2 font-display text-2xl font-bold text-slate-900 tabular-nums">
+            {stats.pending}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">New, Docs Pending & On Hold</p>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-white p-4">
+          <div className="flex items-center justify-between text-slate-500">
+            <span className="text-xs font-semibold">Missing Documents</span>
+            <FileWarning className="h-4 w-4 text-red-600" />
+          </div>
+          <p className="mt-2 font-display text-2xl font-bold text-red-700 tabular-nums">
+            {stats.missingDocsApps}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">Active apps incomplete</p>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-white p-4">
+          <div className="flex items-center justify-between text-slate-500">
+            <span className="text-xs font-semibold">Overdue Applications</span>
+            <CalendarClock className="h-4 w-4 text-orange-600" />
+          </div>
+          <p className="mt-2 font-display text-2xl font-bold text-orange-700 tabular-nums">
+            {stats.overdueApps}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">Past expected date</p>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => onNavigate('alerts')}
+          className="text-left rounded-xl border border-slate-200 bg-white p-4 hover:border-amber-300 transition-colors"
+        >
+          <div className="flex items-center justify-between text-slate-500">
+            <span className="text-xs font-semibold">RC & Ins Alerts</span>
+            <AlertTriangle className="h-4 w-4 text-amber-600" />
+          </div>
+          <p className="mt-2 font-display text-2xl font-bold text-amber-700 tabular-nums">
+            {stats.expiringVehicles.length}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">Expired or expiring within 30 days</p>
+        </button>
+      </div>
+
+      {/* Multi-Showroom Workload Breakdown */}
+      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
+          <div className="flex items-center gap-2">
+            <Building2 className="h-4 w-4 text-blue-600" />
+            <h3 className="font-display text-sm font-bold text-slate-900">
+              Showroom-Wise RTO Workload Summary
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate('showrooms')}
+            className="text-xs font-semibold text-blue-700 hover:text-blue-800 inline-flex items-center gap-1"
+          >
+            <span>Manage Showrooms</span>
+            <ArrowUpRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500 border-b border-slate-200">
+              <tr>
+                <th className="px-5 py-3">Showroom</th>
+                <th className="px-4 py-3 text-right">Clients Served</th>
+                <th className="px-4 py-3 text-right">Total Apps</th>
+                <th className="px-4 py-3 text-right">New / Pending</th>
+                <th className="px-4 py-3 text-right">In Process</th>
+                <th className="px-4 py-3 text-right">Completed</th>
+                <th className="px-4 py-3 text-right">Missing Docs</th>
+                <th className="px-5 py-3 text-right">Filter</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {showroomSummaries.map((s) => (
+                <tr
+                  key={s.showroom.id}
+                  className={
+                    activeShowroomId === s.showroom.id ? 'bg-blue-50/40' : 'hover:bg-slate-50'
+                  }
+                >
+                  <td className="px-5 py-3">
+                    <p className="font-semibold text-slate-900">{s.showroom.name}</p>
+                    <p className="text-xs text-slate-500">
+                      <span className="font-mono">{s.showroom.code}</span> · {s.showroom.city}
+                    </p>
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-slate-700">
+                    {s.uniqueClientsCount}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums font-semibold text-slate-900">
+                    {s.applicationsCount}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-amber-700">
+                    {s.newAndPendingCount}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-blue-700">
+                    {s.inProcessCount}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-emerald-700 font-semibold">
+                    {s.completedCount}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-red-700 font-semibold">
+                    {s.missingDocsAppsCount}
+                  </td>
+                  <td className="px-5 py-3 text-right">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onShowroomChange(
+                          activeShowroomId === s.showroom.id ? 'ALL' : s.showroom.id
+                        )
+                      }
+                      className={`rounded-md px-2.5 py-1 text-xs font-semibold ${
+                        activeShowroomId === s.showroom.id
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      {activeShowroomId === s.showroom.id ? 'Focused' : 'Focus'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Lower Two-Column Operational Queues */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recent RTO Applications List */}
-        <div className="bg-white rounded-xl shadow-xs border border-slate-200 p-4">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-            <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-              <FileText className="w-4 h-4 text-blue-600" />
+        {/* Recent RTO Applications */}
+        <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
+            <h3 className="font-display text-sm font-bold text-slate-900">
               Recent RTO Applications
-            </h4>
+            </h3>
             <button
+              type="button"
               onClick={() => onNavigate('rto-work')}
-              className="text-xs text-blue-600 hover:text-blue-800 font-semibold cursor-pointer"
+              className="text-xs font-semibold text-blue-700 hover:text-blue-800"
             >
-              View All ({db.applications.length})
+              View All
             </button>
           </div>
-
-          <div className="divide-y divide-slate-100 mt-2">
-            {db.applications.slice(0, 4).map((app) => (
-              <div key={app.id} className="py-2.5 flex items-center justify-between gap-3 text-xs">
-                <div>
-                  <div className="font-semibold text-slate-900 flex items-center gap-2">
-                    <span>{app.vehicleNumber}</span>
-                    <span className="text-slate-400">•</span>
-                    <span className="text-slate-700">{app.workType}</span>
+          {recentApps.length === 0 ? (
+            <div className="p-8 text-center text-sm text-slate-500">
+              No RTO applications recorded yet. Create an entry using New RTO Entry.
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {recentApps.map((app) => (
+                <div key={app.id} className="flex items-center justify-between gap-3 px-5 py-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-slate-900">
+                      {app.workType} · <span className="font-mono">{app.vehicleNumber}</span>
+                    </p>
+                    <p className="truncate text-xs text-slate-500">
+                      {app.clientName} · {getShowroomLabel(showrooms, app.showroomId)} · {app.applicationDate}
+                    </p>
                   </div>
-                  <div className="text-slate-500 text-[11px] mt-0.5">
-                    {app.clientName} | {app.rtoOffice.split('(')[0]}
-                  </div>
-                </div>
-                <div className="text-right">
                   <span
-                    className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${
-                      app.workStatus === 'Completed'
-                        ? 'bg-emerald-100 text-emerald-800'
-                        : app.workStatus === 'Processing'
-                        ? 'bg-blue-100 text-blue-800'
-                        : 'bg-amber-100 text-amber-800'
-                    }`}
+                    className={`shrink-0 rounded-md border px-2 py-0.5 text-xs font-semibold ${statusBadgeClass(
+                      app.workStatus
+                    )}`}
                   >
                     {app.workStatus}
                   </span>
-                  <div className="text-slate-500 text-[11px] mt-0.5">
-                    Due: {app.expectedCompletionDate}
-                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Recent Tractor & Exchange Activity */}
-        <div className="bg-white rounded-xl shadow-xs border border-slate-200 p-4">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-            <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-              <Tractor className="w-4 h-4 text-amber-600" />
-              Tractor Showroom & Exchange Deals
-            </h4>
-            <button
-              onClick={() => onNavigate('tractor-showroom')}
-              className="text-xs text-amber-600 hover:text-amber-800 font-semibold cursor-pointer"
-            >
-              View Stock ({db.tractors.length})
-            </button>
+        {/* Pending Work & Upcoming Expiries */}
+        <div className="space-y-6">
+          <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
+              <h3 className="font-display text-sm font-bold text-slate-900">
+                Pending RTO Work Queue
+              </h3>
+              <span className="text-xs text-slate-500">{pendingQueue.length} active</span>
+            </div>
+            {pendingQueue.length === 0 ? (
+              <div className="p-6 text-center text-sm text-slate-500">
+                No pending applications in this scope.
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {pendingQueue.map((app) => {
+                  const overdue = isOverdue(app.expectedCompletionDate, app.workStatus, todayStr);
+                  return (
+                    <div key={app.id} className="flex items-center justify-between gap-3 px-5 py-2.5">
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-semibold text-slate-900">
+                          {app.id} · {app.clientName} ({app.vehicleNumber})
+                        </p>
+                        <p className="truncate text-[11px] text-slate-500">
+                          {app.workType} · Due: {app.expectedCompletionDate || 'Not set'}
+                        </p>
+                      </div>
+                      <span
+                        className={`shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold ${
+                          overdue ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-700'
+                        }`}
+                      >
+                        {overdue ? 'Overdue' : app.workStatus}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
-          <div className="divide-y divide-slate-100 mt-2">
-            {db.tractors.slice(0, 4).map((trc) => (
-              <div key={trc.id} className="py-2.5 flex items-center justify-between gap-3 text-xs">
-                <div>
-                  <div className="font-semibold text-slate-900 flex items-center gap-2">
-                    <span>{trc.brand} {trc.model}</span>
-                    <span className="text-slate-400">•</span>
-                    <span className="text-slate-600">{trc.registrationNumber}</span>
-                  </div>
-                  <div className="text-slate-500 text-[11px] mt-0.5">
-                    Price: {formatINR(trc.price)} | Cust: {trc.ownerName}
-                  </div>
-                </div>
-                <div className="text-right">
-                  <span
-                    className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${
-                      trc.stockStatus === 'In Stock'
-                        ? 'bg-emerald-100 text-emerald-800'
-                        : trc.stockStatus === 'Sold'
-                        ? 'bg-blue-100 text-blue-800'
-                        : trc.stockStatus === 'Booked'
-                        ? 'bg-purple-100 text-purple-800'
-                        : 'bg-amber-100 text-amber-800'
-                    }`}
-                  >
-                    {trc.stockStatus}
-                  </span>
-                </div>
+          <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
+              <h3 className="font-display text-sm font-bold text-slate-900">
+                Recent Common Clients ({clients.length})
+              </h3>
+              <button
+                type="button"
+                onClick={() => onNavigate('clients')}
+                className="text-xs font-semibold text-blue-700 hover:text-blue-800"
+              >
+                Open Directory
+              </button>
+            </div>
+            {recentClients.length === 0 ? (
+              <div className="p-6 text-center text-sm text-slate-500">
+                No clients registered yet.
               </div>
-            ))}
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {recentClients.map((c) => (
+                  <div key={c.id} className="flex items-center justify-between gap-3 px-5 py-2.5">
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-semibold text-slate-900">
+                        {c.name}
+                      </p>
+                      <p className="truncate text-[11px] text-slate-500">
+                        {c.id} · {c.address || 'Karnataka'}
+                      </p>
+                    </div>
+                    <span className="font-mono text-xs text-slate-600 shrink-0">{c.mobile}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>

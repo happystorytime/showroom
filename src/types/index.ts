@@ -1,97 +1,158 @@
-export type WorkStatus = 'New' | 'Pending' | 'Processing' | 'Submitted' | 'Completed' | 'Rejected' | 'On Hold';
+export const RTO_WORK_CATEGORIES = [
+  'New Vehicle Registration',
+  'Ownership Transfer',
+  'RC Renewal',
+  'Duplicate RC',
+  'NOC',
+  'Hypothecation Addition',
+  'Hypothecation Termination',
+  'Address Change',
+  'Insurance Update',
+  'Vehicle Re-registration',
+  'Fitness Certificate',
+  'Permit Work',
+  'Other RTO Work',
+] as const;
 
-export type PaymentMode = 'Cash' | 'UPI' | 'Bank Transfer' | 'Cheque';
+export type RTOWorkCategory = (typeof RTO_WORK_CATEGORIES)[number];
 
-export type VehicleType = 'Tractor' | 'Commercial Goods' | 'Passenger Cab' | 'Auto Rickshaw' | 'Two Wheeler' | 'Private Car' | 'Bus' | 'Trailer';
+export const WORK_STATUSES = [
+  'New',
+  'Documents Pending',
+  'Ready to Submit',
+  'Submitted',
+  'In Process',
+  'Completed',
+  'Rejected',
+  'On Hold',
+] as const;
 
-export type TractorBrand = 'Mahindra' | 'Swaraj' | 'John Deere' | 'Sonalika' | 'Massey Ferguson' | 'New Holland' | 'Kubota' | 'Farmtrac' | 'Powertrac' | 'Eicher';
+export type WorkStatus = (typeof WORK_STATUSES)[number];
 
-export type TractorStockStatus = 'In Stock' | 'Sold' | 'Booked' | 'In Transit';
+export const DOCUMENT_CATEGORIES = [
+  'RC Book',
+  'Aadhaar Card',
+  'PAN Card',
+  'Insurance',
+  'Driving Licence',
+  'Form 29',
+  'Form 30',
+  'Form 35',
+  'NOC',
+  'Sale Agreement',
+  'Address Proof',
+  'Other Documents',
+] as const;
 
-export type LoanStatus = 'Applied' | 'Login' | 'In Verification' | 'Approved' | 'Disbursed' | 'Rejected' | 'Closed';
+export type DocumentCategory = (typeof DOCUMENT_CATEGORIES)[number];
 
-export type FinanceCompany = 
-  | 'Tyger Capital'
-  | 'TVS Credit Ltd'
-  | 'DCB Bank Ltd'
-  | 'Kotak Mahindra Bank Ltd'
-  | 'Vastu Finance'
-  | 'IndusInd Bank'
-  | 'IFFCO Kisan Finance'
-  | 'Shriram Finance'
-  | 'Sundaram Finance';
+export const VEHICLE_CLASSES = [
+  'Agricultural Tractor',
+  'Tractor-Trailer',
+  'Two Wheeler',
+  'LMV Car',
+  'Commercial Goods Vehicle',
+  'Passenger Cab',
+  'Auto Rickshaw',
+  'Bus / Heavy Passenger',
+  'Construction Equipment',
+] as const;
 
-export type ExpenseCategory = 
-  | 'Fuel'
-  | 'Transport'
-  | 'Office'
-  | 'Printing'
-  | 'Staff Salary'
-  | 'Government Fees'
-  | 'Other Expenses';
+export type VehicleClass = (typeof VEHICLE_CLASSES)[number];
 
-export type DocumentCategory =
-  | 'RC'
-  | 'Insurance'
-  | 'Aadhaar'
-  | 'PAN Card'
-  | 'Driving Licence'
-  | 'Form 29'
-  | 'Form 30'
-  | 'Form 35'
-  | 'NOC'
-  | 'Fitness Certificate'
-  | 'Permit'
-  | 'Other Documents';
+export const FUEL_TYPES = ['Diesel', 'Petrol', 'Electric', 'CNG', 'Hybrid'] as const;
+export type FuelType = (typeof FUEL_TYPES)[number];
 
+export type HypothecationStatus = 'None' | 'Hypothecated' | 'Terminated';
+
+export type ChecklistStatus =
+  | 'Documents Complete'
+  | 'Documents Incomplete'
+  | 'Documents Under Verification';
+
+export type DocumentVerificationStatus = 'Verified' | 'Pending' | 'Rejected';
+export type DocumentCustodyStatus =
+  | 'Received'
+  | 'Missing'
+  | 'Submitted to RTO'
+  | 'Returned to Client';
+
+export interface Showroom {
+  id: string; // e.g. SHW-101
+  name: string;
+  code: string; // e.g. BLR-MAIN
+  city: string;
+  address: string;
+  phone: string;
+  managerName: string;
+  rtoJurisdiction: string;
+  isActive: boolean;
+}
+
+/**
+ * Centralized Common Client Record shared across ALL showrooms.
+ * Optional createdShowroomId tracks origin branch only; clients are never showroom-locked.
+ */
 export interface Client {
   id: string; // e.g. CLI-1001
+  createdShowroomId?: string;
   name: string;
   mobile: string;
   alternateMobile: string;
   address: string;
-  aadhaar: string;
+  aadhaar?: string;
+  panNumber?: string;
   registrationDate: string; // YYYY-MM-DD
   remarks: string;
   createdAt: string;
   updatedAt: string;
 }
 
+/**
+ * Vehicle Record linked to a Client in the common database.
+ */
 export interface Vehicle {
   id: string; // e.g. VEH-1001
   clientId: string;
-  vehicleNumber: string; // e.g. KA-04-MB-4521
-  ownerName: string;
-  vehicleType: VehicleType;
-  brand: string;
-  model: string;
-  manufacturingYear: number;
+  vehicleNumber: string; // Registration number e.g. KA-04-MB-4521
   chassisNumber: string;
   engineNumber: string;
-  fuelType: 'Diesel' | 'Petrol' | 'Electric' | 'CNG';
-  registrationDate: string;
+  vehicleClass: VehicleClass | string;
+  model: string;
+  manufacturer: string;
+  manufacturingYear: number;
+  fuelType: FuelType;
+  ownerName: string;
+  registrationDate: string; // YYYY-MM-DD
   rcValidity: string; // YYYY-MM-DD
-  insuranceExpiry: string; // YYYY-MM-DD
+  insuranceExpiry: string; // YYYY-MM-DD (Insurance validity)
+  hypothecationStatus: HypothecationStatus;
+  hypothecationFinancer?: string;
+  rtoOffice: string;
   documentStatus: 'Complete' | 'Pending Verification' | 'Expired';
   createdAt: string;
+  updatedAt?: string;
 }
 
+/**
+ * Showroom-wise RTO Work Application linking Client + Vehicle + Showroom + Category.
+ * Strictly RTO documentation & work tracking only (zero fee/payment/invoice fields).
+ */
 export interface RTOApplication {
   id: string; // e.g. APP-1001
+  showroomId: string;
   clientId: string;
   vehicleId: string;
   clientName: string;
   vehicleNumber: string;
-  workType: string;
+  workType: RTOWorkCategory | string;
   applicationNumber: string;
-  rtoOffice: string; // e.g. KA-04 (Bangalore North)
+  rtoOffice: string; // e.g. KA-04 (Bangalore North - Yeshwanthpur)
   applicationDate: string;
   submissionDate: string;
-  completionDate?: string;
   expectedCompletionDate: string;
-  totalFees: number;
-  advancePaid: number;
-  balanceAmount: number;
+  completionDate?: string;
+  requiredDocuments: DocumentCategory[];
   workStatus: WorkStatus;
   workDescription?: string;
   remarks: string;
@@ -99,121 +160,58 @@ export interface RTOApplication {
   updatedAt: string;
 }
 
-export interface DocumentRecord {
-  id: string; // e.g. DOC-1001
+export interface ApplicationHistoryEntry {
+  id: string; // e.g. HIS-1001
+  applicationId: string;
+  showroomId: string;
   clientId: string;
   vehicleId: string;
+  previousStatus?: WorkStatus | '';
+  newStatus: WorkStatus;
+  actionSummary: string;
+  note: string;
+  actorEmail: string;
+  changedAt: string;
+}
+
+export interface DocumentRecord {
+  id: string; // e.g. DOC-1001
+  showroomId: string;
+  clientId: string;
+  vehicleId: string;
+  applicationId?: string;
   vehicleNumber: string;
   clientName: string;
   documentType: DocumentCategory;
   documentNumber: string;
   issueDate: string;
   expiryDate: string;
-  receivedStatus: 'Received' | 'Missing' | 'Submitted to RTO' | 'Returned to Client';
-  verificationStatus: 'Verified' | 'Pending' | 'Rejected';
+  receivedStatus: DocumentCustodyStatus;
+  verificationStatus: DocumentVerificationStatus;
+  fileName?: string;
+  fileSize?: number;
+  mimeType?: string;
+  storagePath?: string;
+  downloadUrl?: string;
   filePathOrReference: string;
+  uploadedAt?: string;
   remarks: string;
   createdAt: string;
-}
-
-export interface TractorItem {
-  id: string; // e.g. TRC-1001
-  registrationNumber: string;
-  brand: TractorBrand;
-  model: string;
-  manufacturingYear: number;
-  chassisNumber: string;
-  engineNumber: string;
-  ownerName: string;
-  customerMobile?: string;
-  rcStatus: 'Available' | 'In Process' | 'Expired' | 'N/A';
-  insuranceStatus: 'Active' | 'Expired' | 'Pending Renewal';
-  purchaseDate: string;
-  stockStatus: TractorStockStatus;
-  price: number;
-  deliveryDate?: string;
-  deliveryStatus?: 'Delivered' | 'Pending' | 'Scheduled';
-  remarks?: string;
-}
-
-export interface TractorExchange {
-  id: string; // e.g. EXC-1001
-  customerName: string;
-  customerMobile: string;
-  oldTractorNumber: string;
-  oldTractorModel: string;
-  oldChassisNumber: string;
-  oldEngineNumber: string;
-  oldTractorOwner: string;
-  oldTractorValuation: number;
-  exchangeDate: string;
-  newTractorModel: string;
-  newTractorNumber: string;
-  newTractorPrice: number;
-  exchangeDifferenceAmount: number; // New Price - Old Valuation
-  remarks: string;
-  createdAt: string;
-}
-
-export interface LoanRecord {
-  id: string; // e.g. LON-1001
-  customerName: string;
-  customerMobile: string;
-  tractorNumber: string;
-  financeCompany: FinanceCompany;
-  loanAmount: number;
-  documentCharges: number;
-  netCreditAmount: number; // loanAmount - documentCharges
-  loanStatus: LoanStatus;
-  loginDate: string;
-  approvalDate?: string;
-  disbursementDate?: string;
-  firstPayment: number;
-  holdAmount: number;
-  pendingAmount: number;
-  accountClosureStatus: 'Active' | 'Closed' | 'NOC Issued';
-  remarks?: string;
-}
-
-export interface PaymentTransaction {
-  id: string; // e.g. TXN-1001
-  date: string;
-  clientId: string;
-  clientName: string;
-  vehicleNumber: string;
-  applicationId: string;
-  paymentType: 'Advance' | 'Installment' | 'Final Clearance' | 'Document Fee';
-  totalFees: number;
-  advancePayment: number;
-  additionalPayment: number;
-  totalPaid: number; // advance + additional
-  balanceAmount: number; // totalFees - totalPaid
-  paymentMode: PaymentMode;
-  transactionReference: string;
-  remarks: string;
-  createdAt: string;
-}
-
-export interface ExpenseRecord {
-  id: string; // e.g. EXP-1001
-  date: string;
-  category: ExpenseCategory;
-  description: string;
-  amount: number;
-  paymentMode: PaymentMode;
-  remarks: string;
-  createdAt: string;
+  updatedAt?: string;
 }
 
 export interface ArchivedRecord {
   archiveId: string;
-  entityType: 'Client' | 'Vehicle' | 'Application' | 'Tractor' | 'Exchange' | 'Loan' | 'Payment' | 'Expense' | 'Document';
+  showroomId: string;
+  entityType: 'Client' | 'Vehicle' | 'Application' | 'Document';
   entityId: string;
   summary: string;
-  data: any;
+  data: Record<string, unknown>;
   deletedAt: string;
   deletedBy: string;
 }
+
+export type DocumentChecklistMap = Record<string, DocumentCategory[]>;
 
 export interface SystemSettings {
   businessName: string;
@@ -221,17 +219,12 @@ export interface SystemSettings {
   address: string;
   mobile: string;
   email: string;
-  gstNumber?: string;
   rtoLicenseNumber?: string;
   rtoOffices: string[];
-  vehicleTypes: string[];
+  vehicleClasses: string[];
   workTypes: string[];
-  paymentModes: string[];
-  expenseCategories: string[];
-  financeCompanies: string[];
   applicationStatuses: string[];
-  enablePasswordProtection: boolean;
-  adminPassword?: string;
+  documentChecklistMap: DocumentChecklistMap;
 }
 
 export type TimeFilter = 'all' | 'today' | 'week' | 'month' | 'year';

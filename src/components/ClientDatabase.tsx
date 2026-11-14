@@ -1,398 +1,788 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
-  Users,
   Search,
-  Plus,
-  Edit2,
+  UserPlus,
+  Edit3,
   Trash2,
+  Eye,
   Printer,
-  History,
-  Phone,
-  CreditCard,
-  Car,
-  FileText,
   X,
-  ExternalLink,
+  AlertTriangle,
+  CheckCircle2,
+  Building2,
+  Car,
+  ClipboardList,
+  FolderOpen,
 } from 'lucide-react';
-import { Client, Vehicle, RTOApplication, PaymentTransaction } from '../types';
-import { AppDatabase } from '../utils/storage';
-import { formatINR, maskAadhaar } from '../utils/pureCalculations';
+import type {
+  Client,
+  DocumentRecord,
+  RTOApplication,
+  Showroom,
+  SystemSettings,
+  Vehicle,
+} from '../types';
+import {
+  findDuplicateClient,
+  formatAadhaarInput,
+  formatPanInput,
+  getShowroomLabel,
+  getTodayDateStr,
+  maskAadhaar,
+  maskPAN,
+} from '../utils/pureCalculations';
 import { exportGeneralReportPDF } from '../utils/pdfGenerator';
-import { ActiveTab } from './Navbar';
 
 interface ClientDatabaseProps {
-  db: AppDatabase;
-  onEditClient: (client: Client) => void;
-  onDeleteClient: (clientId: string) => void;
-  onNavigate: (tab: ActiveTab) => void;
+  clients: Client[];
+  vehicles: Vehicle[];
+  applications: RTOApplication[];
+  documents: DocumentRecord[];
+  showrooms: Showroom[];
+  settings: SystemSettings;
+  activeShowroomId: string;
+  initialSearch?: string;
+  onSaveClient: (client: Client, isUpdate: boolean) => Promise<void>;
+  onDeleteClient: (client: Client) => Promise<void>;
+  getNextClientId: () => string;
 }
 
 export const ClientDatabase: React.FC<ClientDatabaseProps> = ({
-  db,
-  onEditClient,
+  clients,
+  vehicles,
+  applications,
+  documents,
+  showrooms,
+  settings,
+  activeShowroomId,
+  initialSearch = '',
+  onSaveClient,
   onDeleteClient,
-  onNavigate,
+  getNextClientId,
 }) => {
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedClientHistory, setSelectedClientHistory] = useState<Client | null>(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState(initialSearch);
+  const [filterByActiveShowroomOnly, setFilterByActiveShowroomOnly] = useState(false);
 
-  // Compute Client metrics
-  const clientRows = db.clients.map((c) => {
-    const clientVehicles = db.vehicles.filter((v) => v.clientId === c.id);
-    const clientApps = db.applications.filter((a) => a.clientId === c.id);
-    const clientPayments = db.payments.filter((p) => p.clientId === c.id);
+  const [formOpen, setFormOpen] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
-    const totalPaid = clientPayments.reduce((acc, p) => acc + (p.totalPaid || 0), 0);
-    const totalOutstanding = clientApps.reduce((acc, a) => acc + (a.balanceAmount || 0), 0);
-
-    return {
-      ...c,
-      totalVehicles: clientVehicles.length,
-      totalApplications: clientApps.length,
-      totalPaid,
-      outstandingBalance: totalOutstanding,
-      vehicles: clientVehicles,
-      applications: clientApps,
-      payments: clientPayments,
-    };
+  const [form, setForm] = useState<Client>({
+    id: '',
+    createdShowroomId: undefined,
+    name: '',
+    mobile: '',
+    alternateMobile: '',
+    address: '',
+    aadhaar: '',
+    panNumber: '',
+    registrationDate: getTodayDateStr(),
+    remarks: '',
+    createdAt: '',
+    updatedAt: '',
   });
 
-  const filteredClients = clientRows.filter(
-    (c) =>
-      c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      c.mobile.includes(searchTerm) ||
-      c.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      c.address.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const [drawerClient, setDrawerClient] = useState<Client | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Client | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
-  const handlePrintAll = () => {
-    const headers = [
-      'Client ID',
-      'Name',
-      'Mobile',
-      'Address',
-      'Aadhaar (Masked)',
-      'Reg Date',
-      'Vehicles',
-      'Apps',
-      'Total Paid',
-      'Outstanding',
-    ];
-    const data = filteredClients.map((c) => [
-      c.id,
-      c.name,
-      c.mobile,
-      c.address,
-      maskAadhaar(c.aadhaar),
-      c.registrationDate,
-      c.totalVehicles,
-      c.totalApplications,
-      formatINR(c.totalPaid),
-      formatINR(c.outstandingBalance),
-    ]);
-    exportGeneralReportPDF('Registered Client Database Report', headers, data, db.settings);
+  const filteredClients = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    return clients.filter((c) => {
+      if (filterByActiveShowroomOnly && activeShowroomId !== 'ALL') {
+        const servedInBranch =
+          c.createdShowroomId === activeShowroomId ||
+          applications.some((a) => a.clientId === c.id && a.showroomId === activeShowroomId);
+        if (!servedInBranch) return false;
+      }
+
+      if (!q) return true;
+      const linkedVehs = vehicles.filter((v) => v.clientId === c.id);
+      const matchesVehicle = linkedVehs.some(
+        (v) =>
+          v.vehicleNumber.toLowerCase().includes(q) ||
+          v.chassisNumber.toLowerCase().includes(q)
+      );
+      return (
+        c.name.toLowerCase().includes(q) ||
+        c.mobile.toLowerCase().includes(q) ||
+        (c.alternateMobile || '').toLowerCase().includes(q) ||
+        c.id.toLowerCase().includes(q) ||
+        (c.panNumber || '').toLowerCase().includes(q) ||
+        matchesVehicle
+      );
+    });
+  }, [clients, vehicles, applications, searchTerm, filterByActiveShowroomOnly, activeShowroomId]);
+
+  const duplicateWarning = useMemo(() => {
+    if (!formOpen) return null;
+    if (
+      form.mobile.replace(/\D/g, '').length < 10 &&
+      (form.aadhaar || '').replace(/\D/g, '').length < 12 &&
+      (form.panNumber || '').length < 10
+    ) {
+      return null;
+    }
+    return findDuplicateClient(clients, {
+      mobile: form.mobile,
+      aadhaar: form.aadhaar,
+      panNumber: form.panNumber,
+      excludeId: isEditing ? form.id : undefined,
+    });
+  }, [formOpen, form.mobile, form.aadhaar, form.panNumber, form.id, isEditing, clients]);
+
+  const openAdd = () => {
+    const today = getTodayDateStr();
+    setIsEditing(false);
+    setFormError(null);
+    setForm({
+      id: getNextClientId(),
+      createdShowroomId: activeShowroomId !== 'ALL' ? activeShowroomId : showrooms[0]?.id,
+      name: '',
+      mobile: '',
+      alternateMobile: '',
+      address: '',
+      aadhaar: '',
+      panNumber: '',
+      registrationDate: today,
+      remarks: '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    setFormOpen(true);
   };
 
-  const handlePrintClientSummary = (c: typeof clientRows[0]) => {
-    const headers = ['Record Type', 'Identifier / Number', 'Description / Service', 'Status / Amount'];
-    const rows: (string | number)[][] = [];
+  const openEdit = (client: Client) => {
+    setIsEditing(true);
+    setFormError(null);
+    setForm({ ...client });
+    setFormOpen(true);
+  };
 
-    c.vehicles.forEach((v) => {
-      rows.push(['Vehicle', v.vehicleNumber, `${v.brand} ${v.model} (${v.vehicleType})`, `RC: ${v.rcValidity}`]);
-    });
-    c.applications.forEach((a) => {
-      rows.push(['RTO Application', a.id, `${a.workType} (${a.vehicleNumber})`, `${a.workStatus} | Bal: ${formatINR(a.balanceAmount)}`]);
-    });
-    c.payments.forEach((p) => {
-      rows.push(['Payment', p.id, `${p.paymentType} (${p.paymentMode})`, formatINR(p.totalPaid)]);
-    });
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!form.name.trim() || form.mobile.replace(/\D/g, '').length < 10) {
+      setFormError('Client full name and a valid 10-digit mobile number are required.');
+      return;
+    }
+    if (duplicateWarning) {
+      setFormError(
+        `Duplicate detected (${duplicateWarning.matchedBy}): ${duplicateWarning.client.name} (${duplicateWarning.client.id}) already exists in the common client database.`
+      );
+      return;
+    }
 
+    setSaving(true);
+    setFormError(null);
+    try {
+      const nowIso = new Date().toISOString();
+      await onSaveClient(
+        {
+          ...form,
+          name: form.name.trim(),
+          mobile: form.mobile.trim(),
+          alternateMobile: (form.alternateMobile || '').trim(),
+          address: (form.address || '').trim(),
+          aadhaar: form.aadhaar?.trim() || undefined,
+          panNumber: form.panNumber?.trim().toUpperCase() || undefined,
+          remarks: (form.remarks || '').trim(),
+          updatedAt: nowIso,
+          createdAt: form.createdAt || nowIso,
+        },
+        isEditing
+      );
+      setFormOpen(false);
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Failed to save client.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handlePrintClients = () => {
     exportGeneralReportPDF(
-      `Client History - ${c.name} (${c.id})`,
-      headers,
-      rows,
-      db.settings,
-      `Mobile: ${c.mobile} | Address: ${c.address} | Total Outstanding: ${formatINR(c.outstandingBalance)}`
+      'Common Client Directory Report',
+      ['Client ID', 'Full Name', 'Mobile', 'Address', 'Aadhaar', 'Vehicles', 'RTO Apps', 'Showrooms'],
+      filteredClients.map((c) => {
+        const vehCount = vehicles.filter((v) => v.clientId === c.id).length;
+        const cApps = applications.filter((a) => a.clientId === c.id);
+        const branchNames = Array.from(
+          new Set(cApps.map((a) => getShowroomLabel(showrooms, a.showroomId)))
+        ).join(', ');
+        return [
+          c.id,
+          c.name,
+          c.mobile,
+          c.address || '—',
+          maskAadhaar(c.aadhaar),
+          vehCount,
+          cApps.length,
+          branchNames || 'Common',
+        ];
+      }),
+      settings,
+      `Centralized Common Database · Total Clients: ${filteredClients.length}`
     );
   };
 
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await onDeleteClient(deleteTarget);
+      if (drawerClient?.id === deleteTarget.id) setDrawerClient(null);
+      setDeleteTarget(null);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
-    <div className="space-y-5 pb-12">
-      {/* Header Bar */}
-      <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-            <Users className="w-5 h-5 text-blue-600" />
-            <span>03. Client Master Database</span>
-          </h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Registered vehicle owners, farmers, and fleet clients linked with vehicles, RTO jobs & ledger balances.
-          </p>
+    <div className="space-y-5">
+      {/* Header & Controls */}
+      <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 className="font-display text-lg font-bold text-slate-900">
+              Common Client Database ({clients.length})
+            </h2>
+            <p className="text-xs text-slate-500">
+              One centralized directory shared across all showrooms. Existing clients visiting another showroom are linked without duplication.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handlePrintClients}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              <Printer className="h-4 w-4" />
+              <span>Export PDF</span>
+            </button>
+            <button
+              type="button"
+              onClick={openAdd}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-blue-700"
+            >
+              <UserPlus className="h-4 w-4" />
+              <span>Add Client</span>
+            </button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="relative">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
             <input
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search by name, mobile, ID..."
-              className="pl-8 pr-3 py-1.5 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none w-56"
+              placeholder="Search by client name, mobile, PAN, ID, or vehicle registration number..."
+              className="w-full rounded-lg border border-slate-300 pl-9 pr-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
             />
           </div>
-
-          <button
-            onClick={() => onNavigate('data-entry')}
-            className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Register New Client</span>
-          </button>
-
-          <button
-            onClick={handlePrintAll}
-            className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
-          >
-            <Printer className="w-3.5 h-3.5" />
-            <span>Print Report</span>
-          </button>
+          {activeShowroomId !== 'ALL' && (
+            <label className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700 cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                checked={filterByActiveShowroomOnly}
+                onChange={(e) => setFilterByActiveShowroomOnly(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-blue-600"
+              />
+              <span>Only clients served at selected showroom</span>
+            </label>
+          )}
         </div>
       </div>
 
-      {/* Clients Database Table */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-900 text-white uppercase text-[10px] font-bold tracking-wider">
-              <tr>
-                <th className="px-4 py-3">Client ID</th>
-                <th className="px-4 py-3">Client Name</th>
-                <th className="px-4 py-3">Mobile Numbers</th>
-                <th className="px-4 py-3">Address & Aadhaar</th>
-                <th className="px-3 py-3 text-center">Vehicles</th>
-                <th className="px-3 py-3 text-center">RTO Works</th>
-                <th className="px-4 py-3 text-right">Total Paid</th>
-                <th className="px-4 py-3 text-right">Outstanding</th>
-                <th className="px-4 py-3 text-center">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {filteredClients.length === 0 ? (
+      {/* Table */}
+      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+        {filteredClients.length === 0 ? (
+          <div className="p-10 text-center text-sm text-slate-500">
+            No matching clients found in the common directory.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-slate-50 border-b border-slate-200 text-xs font-semibold uppercase tracking-wide text-slate-500">
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-slate-400">
-                    No matching clients found in database.
-                  </td>
+                  <th className="px-4 py-3">Client ID & Name</th>
+                  <th className="px-4 py-3">Mobile / Alt</th>
+                  <th className="px-4 py-3">KYC (Masked)</th>
+                  <th className="px-4 py-3">Vehicles</th>
+                  <th className="px-4 py-3">Showrooms Used</th>
+                  <th className="px-4 py-3 text-right">RTO Apps</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
-              ) : (
-                filteredClients.map((c) => (
-                  <tr key={c.id} className="hover:bg-slate-50 transition">
-                    <td className="px-4 py-3 font-mono font-bold text-blue-700">{c.id}</td>
-                    <td className="px-4 py-3 font-semibold text-slate-900">
-                      <div>{c.name}</div>
-                      <div className="text-[10px] text-slate-400 font-normal">Reg: {c.registrationDate}</div>
-                    </td>
-                    <td className="px-4 py-3 text-slate-600">
-                      <div className="flex items-center gap-1">
-                        <Phone className="w-3 h-3 text-slate-400" />
-                        <span>{c.mobile}</span>
-                      </div>
-                      {c.alternateMobile && (
-                        <div className="text-[10px] text-slate-400 pl-4">{c.alternateMobile}</div>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-slate-600 max-w-xs truncate">
-                      <div>{c.address}</div>
-                      <div className="text-[10px] text-slate-400 font-mono">
-                        Aadhaar: {maskAadhaar(c.aadhaar)}
-                      </div>
-                    </td>
-                    <td className="px-3 py-3 text-center">
-                      <span className="inline-block bg-slate-100 text-slate-800 font-bold px-2 py-0.5 rounded text-[11px]">
-                        {c.totalVehicles}
-                      </span>
-                    </td>
-                    <td className="px-3 py-3 text-center">
-                      <span className="inline-block bg-blue-100 text-blue-800 font-bold px-2 py-0.5 rounded text-[11px]">
-                        {c.totalApplications}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-right font-semibold text-emerald-700">
-                      {formatINR(c.totalPaid)}
-                    </td>
-                    <td className="px-4 py-3 text-right font-bold text-rose-600">
-                      {formatINR(c.outstandingBalance)}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <div className="flex items-center justify-center gap-1.5">
-                        <button
-                          onClick={() => setSelectedClientHistory(c)}
-                          className="p-1 text-blue-600 hover:bg-blue-50 rounded"
-                          title="View 360° Client History (Vehicles, Works, Payments)"
-                        >
-                          <History className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => handlePrintClientSummary(c)}
-                          className="p-1 text-slate-600 hover:bg-slate-100 rounded"
-                          title="Print Client Statement"
-                        >
-                          <Printer className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => onEditClient(c)}
-                          className="p-1 text-amber-600 hover:bg-amber-50 rounded"
-                          title="Edit Client"
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => setConfirmDeleteId(c.id)}
-                          className="p-1 text-rose-600 hover:bg-rose-50 rounded"
-                          title="Delete Client"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredClients.map((client) => {
+                  const linkedVehs = vehicles.filter((v) => v.clientId === client.id);
+                  const clientApps = applications.filter((a) => a.clientId === client.id);
+                  const branchCodes = Array.from(
+                    new Set(
+                      clientApps.map((a) => {
+                        const s = showrooms.find((sh) => sh.id === a.showroomId);
+                        return s ? s.code : a.showroomId;
+                      })
+                    )
+                  );
+                  return (
+                    <tr key={client.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3">
+                        <p className="font-semibold text-slate-900">{client.name}</p>
+                        <p className="font-mono text-xs text-slate-500">
+                          {client.id} · Reg {client.registrationDate}
+                        </p>
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs text-slate-700">
+                        <p>{client.mobile}</p>
+                        {client.alternateMobile && (
+                          <p className="text-slate-400">{client.alternateMobile}</p>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs text-slate-600">
+                        <p>UID: {maskAadhaar(client.aadhaar)}</p>
+                        {client.panNumber && <p>PAN: {maskPAN(client.panNumber)}</p>}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-slate-700">
+                        {linkedVehs.length === 0 ? (
+                          <span className="text-slate-400">No vehicles</span>
+                        ) : (
+                          <div className="space-y-0.5">
+                            {linkedVehs.slice(0, 2).map((v) => (
+                              <p key={v.id} className="font-mono font-semibold text-slate-800">
+                                {v.vehicleNumber}
+                              </p>
+                            ))}
+                            {linkedVehs.length > 2 && (
+                              <p className="text-[11px] text-blue-700">
+                                +{linkedVehs.length - 2} more
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-slate-600">
+                        {branchCodes.length > 0 ? (
+                          <span className="font-mono">{branchCodes.join(', ')}</span>
+                        ) : client.createdShowroomId ? (
+                          <span className="text-slate-500">
+                            {getShowroomLabel(showrooms, client.createdShowroomId)}
+                          </span>
+                        ) : (
+                          'Common'
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right font-semibold tabular-nums text-slate-900">
+                        {clientApps.length}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setDrawerClient(client)}
+                            title="View 360° Client History"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-blue-50 hover:text-blue-700"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openEdit(client)}
+                            title="Edit Client"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                          >
+                            <Edit3 className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDeleteTarget(client)}
+                            title="Delete & Archive Client"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-red-50 hover:text-red-600"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
-      {/* CLIENT 360° HISTORY MODAL */}
-      {selectedClientHistory && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-3xl w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+      {/* Add / Edit Client Modal */}
+      {formOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="w-full max-w-xl rounded-xl border border-slate-200 bg-white shadow-xl overflow-hidden">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+              <h3 className="font-display text-base font-bold text-slate-900">
+                {isEditing ? `Edit Common Client (${form.id})` : `Add Common Client (${form.id})`}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setFormOpen(false)}
+                className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSave} className="p-5 space-y-4 max-h-[85vh] overflow-y-auto">
+              {formError && (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                  {formError}
+                </div>
+              )}
+
+              {duplicateWarning && (
+                <div className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
+                  <span>
+                    Matches existing client <strong>{duplicateWarning.client.name}</strong> (
+                    {duplicateWarning.client.id}) by {duplicateWarning.matchedBy}.
+                  </span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Full Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Mobile Number *
+                  </label>
+                  <input
+                    type="tel"
+                    required
+                    value={form.mobile}
+                    onChange={(e) => setForm({ ...form, mobile: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Alternate Mobile
+                  </label>
+                  <input
+                    type="tel"
+                    value={form.alternateMobile}
+                    onChange={(e) => setForm({ ...form, alternateMobile: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Aadhaar Number (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={form.aadhaar || ''}
+                    onChange={(e) => setForm({ ...form, aadhaar: formatAadhaarInput(e.target.value) })}
+                    placeholder="XXXX-XXXX-XXXX"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    PAN Number (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={form.panNumber || ''}
+                    onChange={(e) => setForm({ ...form, panNumber: formatPanInput(e.target.value) })}
+                    placeholder="ABCDE1234F"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Registration Date
+                  </label>
+                  <input
+                    type="date"
+                    value={form.registrationDate}
+                    onChange={(e) => setForm({ ...form, registrationDate: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    First Registered Showroom
+                  </label>
+                  <select
+                    value={form.createdShowroomId || ''}
+                    onChange={(e) =>
+                      setForm({ ...form, createdShowroomId: e.target.value || undefined })
+                    }
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  >
+                    <option value="">Common (No Primary Branch)</option>
+                    {showrooms.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.code} — {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Address</label>
+                  <textarea
+                    rows={2}
+                    value={form.address}
+                    onChange={(e) => setForm({ ...form, address: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Remarks</label>
+                  <input
+                    type="text"
+                    value={form.remarks}
+                    onChange={(e) => setForm({ ...form, remarks: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setFormOpen(false)}
+                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                  <span>{saving ? 'Saving...' : isEditing ? 'Save Changes' : 'Register Client'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 360° Client History Drawer */}
+      {drawerClient && (
+        <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/50">
+          <div className="w-full max-w-2xl bg-white h-full shadow-2xl flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
               <div>
-                <h3 className="font-bold text-slate-900 text-base">
-                  Client 360° History: {selectedClientHistory.name} ({selectedClientHistory.id})
+                <p className="font-mono text-xs font-semibold text-blue-700">{drawerClient.id}</p>
+                <h3 className="font-display text-lg font-bold text-slate-900">
+                  {drawerClient.name}
                 </h3>
-                <p className="text-xs text-slate-500">
-                  {selectedClientHistory.mobile} | {selectedClientHistory.address}
-                </p>
               </div>
               <button
-                onClick={() => setSelectedClientHistory(null)}
-                className="text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                type="button"
+                onClick={() => setDrawerClient(null)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
               >
-                <X className="w-5 h-5" />
+                <X className="h-5 w-5" />
               </button>
             </div>
 
-            {/* Vehicles section */}
-            <div>
-              <h4 className="text-xs font-bold uppercase text-slate-700 mb-2 flex items-center gap-1.5">
-                <Car className="w-4 h-4 text-emerald-600" />
-                <span>Enrolled Vehicles ({db.vehicles.filter((v) => v.clientId === selectedClientHistory.id).length})</span>
-              </h4>
-              <div className="bg-slate-50 rounded-lg p-3 space-y-2 text-xs">
-                {db.vehicles
-                  .filter((v) => v.clientId === selectedClientHistory.id)
-                  .map((v) => (
-                    <div key={v.id} className="flex justify-between items-center bg-white p-2 rounded border border-slate-200">
-                      <div>
-                        <span className="font-mono font-bold text-slate-900">{v.vehicleNumber}</span>
-                        <span className="text-slate-500 ml-2">
-                          {v.brand} {v.model} ({v.vehicleType})
-                        </span>
-                      </div>
-                      <div className="text-[11px] text-slate-500">
-                        RC: {v.rcValidity} | Ins: {v.insuranceExpiry}
-                      </div>
-                    </div>
-                  ))}
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              {/* KYC Summary */}
+              <div className="grid grid-cols-2 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs">
+                <div>
+                  <span className="text-slate-500">Mobile:</span>{' '}
+                  <span className="font-mono font-semibold text-slate-900">{drawerClient.mobile}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500">Alternate:</span>{' '}
+                  <span className="font-mono text-slate-800">{drawerClient.alternateMobile || '—'}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500">Aadhaar:</span>{' '}
+                  <span className="font-mono text-slate-800">{maskAadhaar(drawerClient.aadhaar)}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500">PAN:</span>{' '}
+                  <span className="font-mono text-slate-800">{maskPAN(drawerClient.panNumber)}</span>
+                </div>
+                <div className="col-span-2">
+                  <span className="text-slate-500">Address:</span>{' '}
+                  <span className="text-slate-800">{drawerClient.address || '—'}</span>
+                </div>
               </div>
-            </div>
 
-            {/* Applications section */}
-            <div>
-              <h4 className="text-xs font-bold uppercase text-slate-700 mb-2 flex items-center gap-1.5">
-                <FileText className="w-4 h-4 text-indigo-600" />
-                <span>RTO Applications ({db.applications.filter((a) => a.clientId === selectedClientHistory.id).length})</span>
-              </h4>
-              <div className="bg-slate-50 rounded-lg p-3 space-y-2 text-xs">
-                {db.applications
-                  .filter((a) => a.clientId === selectedClientHistory.id)
-                  .map((a) => (
-                    <div key={a.id} className="flex justify-between items-center bg-white p-2 rounded border border-slate-200">
-                      <div>
-                        <span className="font-mono font-bold text-blue-700">{a.id}</span>
-                        <span className="font-semibold text-slate-900 ml-2">{a.workType}</span>
-                        <span className="text-slate-500 ml-1">({a.vehicleNumber})</span>
-                      </div>
-                      <div className="text-right">
-                        <span className="font-semibold text-slate-800">{formatINR(a.totalFees)}</span>
-                        <span className="text-rose-600 text-[10px] ml-2">Bal: {formatINR(a.balanceAmount)}</span>
-                      </div>
+              {/* Linked Showrooms */}
+              {(() => {
+                const cApps = applications.filter((a) => a.clientId === drawerClient.id);
+                const cVehs = vehicles.filter((v) => v.clientId === drawerClient.id);
+                const cDocs = documents.filter((d) => d.clientId === drawerClient.id);
+                const branchIds = Array.from(new Set(cApps.map((a) => a.showroomId)));
+
+                return (
+                  <>
+                    <div>
+                      <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-500 mb-2">
+                        <Building2 className="h-4 w-4 text-blue-600" />
+                        <span>Showrooms Served ({branchIds.length})</span>
+                      </h4>
+                      {branchIds.length === 0 ? (
+                        <p className="text-xs text-slate-500">No showroom RTO applications yet.</p>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {branchIds.map((sid) => {
+                            const s = showrooms.find((sh) => sh.id === sid);
+                            return (
+                              <span
+                                key={sid}
+                                className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-800"
+                              >
+                                {s ? `${s.code} — ${s.name}` : sid}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
-                  ))}
-              </div>
-            </div>
 
-            {/* Payments section */}
-            <div>
-              <h4 className="text-xs font-bold uppercase text-slate-700 mb-2 flex items-center gap-1.5">
-                <CreditCard className="w-4 h-4 text-violet-600" />
-                <span>Payment Transactions ({db.payments.filter((p) => p.clientId === selectedClientHistory.id).length})</span>
-              </h4>
-              <div className="bg-slate-50 rounded-lg p-3 space-y-2 text-xs">
-                {db.payments
-                  .filter((p) => p.clientId === selectedClientHistory.id)
-                  .map((p) => (
-                    <div key={p.id} className="flex justify-between items-center bg-white p-2 rounded border border-slate-200">
-                      <div>
-                        <span className="font-mono font-bold text-slate-900">{p.id}</span>
-                        <span className="text-slate-500 ml-2">
-                          {p.date} | {p.paymentType} ({p.paymentMode})
-                        </span>
-                      </div>
-                      <div className="font-bold text-emerald-700">{formatINR(p.totalPaid)}</div>
+                    <div>
+                      <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-500 mb-2">
+                        <Car className="h-4 w-4 text-indigo-600" />
+                        <span>Linked Vehicles ({cVehs.length})</span>
+                      </h4>
+                      {cVehs.length === 0 ? (
+                        <p className="text-xs text-slate-500">No vehicles registered.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {cVehs.map((v) => (
+                            <div
+                              key={v.id}
+                              className="rounded-lg border border-slate-200 p-3 text-xs flex items-center justify-between"
+                            >
+                              <div>
+                                <p className="font-mono font-bold text-slate-900">{v.vehicleNumber}</p>
+                                <p className="text-slate-500">
+                                  {v.manufacturer} {v.model} ({v.vehicleClass}) · {v.rtoOffice}
+                                </p>
+                              </div>
+                              <span className="text-slate-600">
+                                RC: {v.rcValidity || '—'} · Ins: {v.insuranceExpiry || '—'}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  ))}
-              </div>
-            </div>
 
-            <div className="text-right pt-2 border-t border-slate-100">
-              <button
-                onClick={() => setSelectedClientHistory(null)}
-                className="px-4 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold"
-              >
-                Close History
-              </button>
+                    <div>
+                      <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-500 mb-2">
+                        <ClipboardList className="h-4 w-4 text-emerald-600" />
+                        <span>RTO Applications ({cApps.length})</span>
+                      </h4>
+                      {cApps.length === 0 ? (
+                        <p className="text-xs text-slate-500">No RTO applications filed.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {cApps.map((a) => (
+                            <div
+                              key={a.id}
+                              className="rounded-lg border border-slate-200 p-3 text-xs flex items-center justify-between"
+                            >
+                              <div>
+                                <p className="font-semibold text-slate-900">
+                                  {a.id} · {a.workType}
+                                </p>
+                                <p className="text-slate-500">
+                                  {a.vehicleNumber} · {getShowroomLabel(showrooms, a.showroomId)} ·{' '}
+                                  {a.applicationDate}
+                                </p>
+                              </div>
+                              <span className="rounded bg-slate-100 px-2 py-0.5 font-semibold text-slate-800">
+                                {a.workStatus}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-500 mb-2">
+                        <FolderOpen className="h-4 w-4 text-amber-600" />
+                        <span>Uploaded & Tracked Documents ({cDocs.length})</span>
+                      </h4>
+                      {cDocs.length === 0 ? (
+                        <p className="text-xs text-slate-500">No documents attached yet.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {cDocs.map((d) => (
+                            <div
+                              key={d.id}
+                              className="rounded-lg border border-slate-200 p-3 text-xs flex items-center justify-between"
+                            >
+                              <div>
+                                <p className="font-semibold text-slate-900">
+                                  {d.documentType} ({d.vehicleNumber})
+                                </p>
+                                <p className="text-slate-500">
+                                  {d.fileName || d.filePathOrReference} · {d.receivedStatus}
+                                </p>
+                              </div>
+                              <span className="font-semibold text-slate-700">
+                                {d.verificationStatus}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           </div>
         </div>
       )}
 
-      {/* CONFIRM DELETE MODAL */}
-      {confirmDeleteId && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-md w-full p-5 space-y-4">
-            <h3 className="font-bold text-base text-slate-900">Delete Client Confirmation</h3>
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Are you sure you want to delete client <strong>{confirmDeleteId}</strong>? The record and history will be safely preserved in the deleted archive.
+      {/* Delete Confirmation Modal */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
+            <h3 className="font-display text-base font-bold text-slate-900">
+              Archive & Remove Client {deleteTarget.name}?
+            </h3>
+            <p className="mt-1.5 text-sm text-slate-600">
+              This removes <strong>{deleteTarget.id}</strong> from the active directory and saves a recoverable snapshot in the Safety Archive.
             </p>
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="mt-5 flex justify-end gap-2">
               <button
-                onClick={() => setConfirmDeleteId(null)}
-                className="px-4 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer"
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
               >
                 Cancel
               </button>
               <button
-                onClick={() => {
-                  onDeleteClient(confirmDeleteId);
-                  setConfirmDeleteId(null);
-                }}
-                className="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold cursor-pointer"
+                type="button"
+                disabled={deleting}
+                onClick={confirmDelete}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
               >
-                Delete Client
+                {deleting ? 'Archiving...' : 'Archive Client'}
               </button>
             </div>
           </div>

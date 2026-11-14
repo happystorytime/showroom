@@ -1,321 +1,392 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
+import { FileSpreadsheet, Printer, FileDown } from 'lucide-react';
+import type { AppDatabase } from '../utils/storage';
 import {
-  BarChart3,
-  Calendar,
-  Download,
-  Printer,
-  FileSpreadsheet,
-  Filter,
-  CheckCircle,
-  FileText,
-  DollarSign,
-  TrendingUp,
-} from 'lucide-react';
-import { AppDatabase } from '../utils/storage';
-import { TimeFilter } from '../types';
-import {
-  formatINR,
-  isDateWithinFilter,
-  maskAadhaar,
-  calculateNetProfit,
+  computeShowroomRtoSummary,
+  evaluateApplicationChecklist,
+  filterByShowroom,
+  getShowroomLabel,
+  getTodayDateStr,
 } from '../utils/pureCalculations';
 import { exportGeneralReportPDF } from '../utils/pdfGenerator';
-import { ActiveTab } from './Navbar';
 
 interface ReportsManagerProps {
   db: AppDatabase;
-  onNavigate: (tab: ActiveTab) => void;
-  currentDateStr: string;
+  activeShowroomId: string;
+  onExportExcel: () => Promise<void>;
 }
 
-export type ReportType =
-  | 'daily-business'
-  | 'weekly-business'
-  | 'monthly-business'
-  | 'yearly-business'
+type ReportId =
+  | 'showroom-rto'
   | 'client-history'
-  | 'vehicle-history'
-  | 'rto-work'
-  | 'pending-work'
-  | 'completed-work'
-  | 'payment-collection'
-  | 'outstanding-balance'
-  | 'income-expense'
-  | 'tractor-stock'
-  | 'tractor-exchange'
-  | 'loan-report';
+  | 'pending-apps'
+  | 'completed-apps'
+  | 'missing-docs'
+  | 'vehicle-docs'
+  | 'monthly-rto';
 
 export const ReportsManager: React.FC<ReportsManagerProps> = ({
   db,
-  onNavigate,
-  currentDateStr,
+  activeShowroomId,
+  onExportExcel,
 }) => {
-  const [activeReport, setActiveReport] = useState<ReportType>('daily-business');
-  const [timeFilter, setTimeFilter] = useState<TimeFilter>('all');
-  const [customStartDate, setCustomStartDate] = useState('');
-  const [customEndDate, setCustomEndDate] = useState('');
+  const todayStr = getTodayDateStr();
+  const [selectedReport, setSelectedReport] = useState<ReportId>('showroom-rto');
+  const [reportMonth, setReportMonth] = useState(todayStr.slice(0, 7)); // YYYY-MM
 
-  const reportList: { id: ReportType; label: string; desc: string }[] = [
-    { id: 'daily-business', label: '1. Daily Business Report', desc: "Today's RTO registrations, collections, and deliveries" },
-    { id: 'weekly-business', label: '2. Weekly Business Report', desc: '7-day rolling performance and collections summary' },
-    { id: 'monthly-business', label: '3. Monthly Business Report', desc: 'Full monthly revenue, RTO throughput and profit statement' },
-    { id: 'yearly-business', label: '4. Yearly Business Report', desc: 'Annual turnover, tractor sales & agency tax metrics' },
-    { id: 'client-history', label: '5. Client History Report', desc: 'Registered client directory with vehicle linkages & balance' },
-    { id: 'vehicle-history', label: '6. Vehicle History Report', desc: 'All enrolled vehicles with RC & insurance expiry radar' },
-    { id: 'rto-work', label: '7. RTO Work Report', desc: 'Master register of all Karnataka RTO applications' },
-    { id: 'pending-work', label: '8. Pending Work Report', desc: 'New, submitted & processing files needing follow-up' },
-    { id: 'completed-work', label: '9. Completed Work Report', desc: 'Successfully delivered Smart Card RCs and certificates' },
-    { id: 'payment-collection', label: '10. Payment Collection Report', desc: 'Detailed receipts ledger with UPI/Cash/Bank references' },
-    { id: 'outstanding-balance', label: '11. Outstanding Balance Report', desc: 'Unpaid client fee balances requiring recovery' },
-    { id: 'income-expense', label: '12. Income & Expense Report', desc: 'Net profit calculation (Income minus operational costs)' },
-    { id: 'tractor-stock', label: '13. Tractor Stock Report', desc: 'Showroom inventory count, valuation & delivery status' },
-    { id: 'tractor-exchange', label: '14. Tractor Exchange Report', desc: 'Old tractor trade-in valuation & net exchange difference' },
-    { id: 'loan-report', label: '15. Loan Report', desc: 'TVS Credit, Shriram & bank finance disbursement portfolio' },
-  ];
+  const scopedApps = useMemo(
+    () => filterByShowroom(db.applications, activeShowroomId),
+    [db.applications, activeShowroomId]
+  );
 
-  // Generate Report Data according to active type
-  const getReportPayload = () => {
-    switch (activeReport) {
-      case 'daily-business': {
-        const apps = db.applications.filter((a) => a.applicationDate === currentDateStr);
-        const payments = db.payments.filter((p) => p.date === currentDateStr);
-        const headers = ['Record Type', 'Ref / ID', 'Vehicle / Particulars', 'Client Name', 'Amount (₹)', 'Status'];
-        const rows: (string | number)[][] = [];
-
-        apps.forEach((a) => {
-          rows.push(['RTO Application', a.id, `${a.vehicleNumber} (${a.workType})`, a.clientName, formatINR(a.totalFees), a.workStatus]);
-        });
-        payments.forEach((p) => {
-          rows.push(['Collection', p.id, `${p.vehicleNumber} (${p.paymentType} - ${p.paymentMode})`, p.clientName, formatINR(p.totalPaid), 'Collected']);
-        });
-
-        const totalColl = payments.reduce((acc, p) => acc + (p.totalPaid || 0), 0);
+  const reportPayload = useMemo<{
+    title: string;
+    subtitle: string;
+    columns: string[];
+    rows: (string | number)[][];
+  }>(() => {
+    switch (selectedReport) {
+      case 'showroom-rto': {
+        const summaries = computeShowroomRtoSummary(db.showrooms, db, todayStr);
         return {
-          title: `Daily Business Report (${currentDateStr})`,
-          headers,
-          rows,
-          summary: `Total Collections Today: ${formatINR(totalColl)} | Total New Work Logged: ${apps.length}`,
-        };
-      }
-
-      case 'weekly-business':
-      case 'monthly-business':
-      case 'yearly-business': {
-        const filterKey: TimeFilter =
-          activeReport === 'weekly-business' ? 'week' : activeReport === 'monthly-business' ? 'month' : 'year';
-        const apps = db.applications.filter((a) => isDateWithinFilter(a.applicationDate, filterKey, currentDateStr));
-        const payments = db.payments.filter((p) => isDateWithinFilter(p.date, filterKey, currentDateStr));
-        const expenses = db.expenses.filter((e) => isDateWithinFilter(e.date, filterKey, currentDateStr));
-
-        const totalInc = payments.reduce((acc, p) => acc + (p.totalPaid || 0), 0);
-        const totalExp = expenses.reduce((acc, e) => acc + (e.amount || 0), 0);
-        const profit = totalInc - totalExp;
-
-        const headers = ['Category', 'Volume / Units', 'Total Income (₹)', 'Total Expense (₹)', 'Net Result (₹)'];
-        const rows = [
-          ['RTO Applications Processed', apps.length, formatINR(totalInc), formatINR(totalExp), formatINR(profit)],
-          ['Tractors Sold / Booked', db.tractors.filter((t) => t.stockStatus === 'Sold' || t.stockStatus === 'Booked').length, '-', '-', '-'],
-          ['Tractor Loans Sanctioned', db.loans.filter((l) => l.loanStatus === 'Disbursed' || l.loanStatus === 'Approved').length, '-', '-', '-'],
-        ];
-
-        return {
-          title: `${activeReport.replace('-', ' ').toUpperCase()}`,
-          headers,
-          rows,
-          summary: `Period Income: ${formatINR(totalInc)} | Expenses: ${formatINR(totalExp)} | Net Profit: ${formatINR(profit)}`,
+          title: 'Showroom-Wise RTO Work Summary',
+          subtitle: `Partner showrooms tracked: ${db.showrooms.length}`,
+          columns: [
+            'Showroom Code',
+            'Showroom Name',
+            'City',
+            'Clients Served',
+            'Total Apps',
+            'In Process',
+            'Completed',
+            'Missing Docs',
+          ],
+          rows: summaries.map((s) => [
+            s.showroom.code,
+            s.showroom.name,
+            s.showroom.city,
+            s.uniqueClientsCount,
+            s.applicationsCount,
+            s.inProcessCount,
+            s.completedCount,
+            s.missingDocsAppsCount,
+          ]),
         };
       }
 
       case 'client-history': {
-        const headers = ['Client ID', 'Client Name', 'Mobile', 'Address', 'Aadhaar (Masked)', 'Reg Date'];
-        const rows = db.clients.map((c) => [c.id, c.name, c.mobile, c.address, maskAadhaar(c.aadhaar), c.registrationDate]);
-        return { title: 'Client Master History Report', headers, rows, summary: `Total Enrolled Clients: ${db.clients.length}` };
+        return {
+          title: 'Client-Wise RTO Work & Showroom History',
+          subtitle: `Centralized common clients: ${db.clients.length}`,
+          columns: [
+            'Client ID',
+            'Full Name',
+            'Mobile',
+            'Vehicles',
+            'Total Apps',
+            'Showrooms Used',
+            'Latest RTO Work',
+          ],
+          rows: db.clients.map((c) => {
+            const vehs = db.vehicles.filter((v) => v.clientId === c.id);
+            const apps = db.applications.filter((a) => a.clientId === c.id);
+            const branches = Array.from(
+              new Set(apps.map((a) => getShowroomLabel(db.showrooms, a.showroomId)))
+            ).join(', ');
+            const latest = [...apps].sort((a, b) =>
+              (b.applicationDate || '').localeCompare(a.applicationDate || '')
+            )[0];
+            return [
+              c.id,
+              c.name,
+              c.mobile,
+              vehs.map((v) => v.vehicleNumber).join(', ') || '—',
+              apps.length,
+              branches || 'None',
+              latest ? `${latest.workType} (${latest.workStatus})` : '—',
+            ];
+          }),
+        };
       }
 
-      case 'vehicle-history': {
-        const headers = ['Vehicle ID', 'Vehicle Number', 'Owner Name', 'Type', 'Brand & Model', 'RC Expiry', 'Ins Expiry'];
-        const rows = db.vehicles.map((v) => [v.id, v.vehicleNumber, v.ownerName, v.vehicleType, `${v.brand} ${v.model}`, v.rcValidity, v.insuranceExpiry]);
-        return { title: 'Vehicle Fleet & Expiry Radar Report', headers, rows, summary: `Total Vehicles: ${db.vehicles.length}` };
+      case 'pending-apps': {
+        const pending = scopedApps.filter(
+          (a) => a.workStatus !== 'Completed' && a.workStatus !== 'Rejected'
+        );
+        return {
+          title: 'Pending & In-Process RTO Applications',
+          subtitle: `Open applications: ${pending.length}`,
+          columns: [
+            'App ID',
+            'Showroom',
+            'Client Name',
+            'Vehicle No',
+            'Work Category',
+            'RTO Office',
+            'Target Date',
+            'Status',
+          ],
+          rows: pending.map((a) => [
+            a.id,
+            getShowroomLabel(db.showrooms, a.showroomId),
+            a.clientName,
+            a.vehicleNumber,
+            a.workType,
+            a.rtoOffice,
+            a.expectedCompletionDate || '—',
+            a.workStatus,
+          ]),
+        };
       }
 
-      case 'rto-work':
-      case 'pending-work':
-      case 'completed-work': {
-        const apps =
-          activeReport === 'pending-work'
-            ? db.applications.filter((a) => a.workStatus !== 'Completed')
-            : activeReport === 'completed-work'
-            ? db.applications.filter((a) => a.workStatus === 'Completed')
-            : db.applications;
-
-        const headers = ['App ID', 'Vehicle No', 'Client Name', 'Work Type', 'RTO Office', 'Total Fees', 'Balance', 'Status'];
-        const rows = apps.map((a) => [a.id, a.vehicleNumber, a.clientName, a.workType, a.rtoOffice.split('(')[0], formatINR(a.totalFees), formatINR(a.balanceAmount), a.workStatus]);
-        return { title: `RTO Applications - ${activeReport.toUpperCase()}`, headers, rows, summary: `Applications Count: ${apps.length}` };
+      case 'completed-apps': {
+        const completed = scopedApps.filter((a) => a.workStatus === 'Completed');
+        return {
+          title: 'Completed RTO Applications Report',
+          subtitle: `Total completed: ${completed.length}`,
+          columns: [
+            'App ID',
+            'Showroom',
+            'Client Name',
+            'Vehicle No',
+            'Work Category',
+            'Govt App No',
+            'App Date',
+            'Completion Date',
+          ],
+          rows: completed.map((a) => [
+            a.id,
+            getShowroomLabel(db.showrooms, a.showroomId),
+            a.clientName,
+            a.vehicleNumber,
+            a.workType,
+            a.applicationNumber || '—',
+            a.applicationDate,
+            a.completionDate || a.updatedAt.slice(0, 10),
+          ]),
+        };
       }
 
-      case 'payment-collection': {
-        const headers = ['Txn ID', 'Date', 'Client Name', 'Vehicle Number', 'Payment Type', 'Total Paid (₹)', 'Mode', 'Reference'];
-        const rows = db.payments.map((p) => [p.id, p.date, p.clientName, p.vehicleNumber, p.paymentType, formatINR(p.totalPaid), p.paymentMode, p.transactionReference]);
-        const sum = db.payments.reduce((acc, p) => acc + (p.totalPaid || 0), 0);
-        return { title: 'Payment Collections Audit Ledger', headers, rows, summary: `Total Collections Received: ${formatINR(sum)}` };
+      case 'missing-docs': {
+        const incomplete = scopedApps
+          .filter((a) => a.workStatus !== 'Completed' && a.workStatus !== 'Rejected')
+          .map((a) => ({
+            app: a,
+            evalRes: evaluateApplicationChecklist(a, db.documents, db.settings),
+          }))
+          .filter((x) => x.evalRes.status !== 'Documents Complete');
+
+        return {
+          title: 'Missing & Pending Verification Documents Report',
+          subtitle: `Applications needing document action: ${incomplete.length}`,
+          columns: [
+            'App ID',
+            'Showroom',
+            'Client',
+            'Vehicle No',
+            'Work Category',
+            'Checklist Status',
+            'Missing Docs',
+            'Pending Verification',
+          ],
+          rows: incomplete.map(({ app, evalRes }) => [
+            app.id,
+            getShowroomLabel(db.showrooms, app.showroomId),
+            app.clientName,
+            app.vehicleNumber,
+            app.workType,
+            evalRes.status,
+            evalRes.missing.join(', ') || 'None',
+            evalRes.pendingVerification.join(', ') || 'None',
+          ]),
+        };
       }
 
-      case 'outstanding-balance': {
-        const dueApps = db.applications.filter((a) => a.balanceAmount > 0);
-        const headers = ['App ID', 'Client Name', 'Vehicle Number', 'Work Type', 'Total Fees (₹)', 'Advance (₹)', 'Outstanding Balance (₹)', 'Status'];
-        const rows = dueApps.map((a) => [a.id, a.clientName, a.vehicleNumber, a.workType, formatINR(a.totalFees), formatINR(a.advancePaid), formatINR(a.balanceAmount), a.workStatus]);
-        const sum = dueApps.reduce((acc, a) => acc + (a.balanceAmount || 0), 0);
-        return { title: 'Unpaid Outstanding Balances Report', headers, rows, summary: `Total Overdue Balance: ${formatINR(sum)} from ${dueApps.length} applications` };
+      case 'vehicle-docs': {
+        return {
+          title: 'Vehicle Document & Validity Report',
+          subtitle: `Registered vehicles: ${db.vehicles.length}`,
+          columns: [
+            'Vehicle No',
+            'Owner',
+            'Class',
+            'RTO Office',
+            'RC Validity',
+            'Insurance Validity',
+            'Hypothecation',
+            'Doc Status',
+          ],
+          rows: db.vehicles.map((v) => [
+            v.vehicleNumber,
+            v.ownerName,
+            v.vehicleClass,
+            v.rtoOffice,
+            v.rcValidity || '—',
+            v.insuranceExpiry || '—',
+            v.hypothecationStatus,
+            v.documentStatus,
+          ]),
+        };
       }
 
-      case 'income-expense': {
-        const totalInc = db.payments.reduce((acc, p) => acc + (p.totalPaid || 0), 0);
-        const totalExp = db.expenses.reduce((acc, e) => acc + (e.amount || 0), 0);
-        const profit = totalInc - totalExp;
-        const headers = ['Financial Component', 'Transaction Count', 'Total Amount (₹)'];
-        const rows = [
-          ['Total Collections (Income)', db.payments.length, formatINR(totalInc)],
-          ['Operational Expenses', db.expenses.length, formatINR(totalExp)],
-          ['NET BUSINESS PROFIT', '-', formatINR(profit)],
-        ];
-        return { title: 'Income, Expense & Net Profit Audit Report', headers, rows, summary: `Net Business Profit: ${formatINR(profit)}` };
+      case 'monthly-rto': {
+        const monthly = scopedApps.filter((a) => (a.applicationDate || '').startsWith(reportMonth));
+        return {
+          title: `Monthly RTO Workload Report (${reportMonth})`,
+          subtitle: `Applications filed in ${reportMonth}: ${monthly.length}`,
+          columns: [
+            'App ID',
+            'Date',
+            'Showroom',
+            'Client Name',
+            'Vehicle No',
+            'Work Category',
+            'RTO Office',
+            'Status',
+          ],
+          rows: monthly.map((a) => [
+            a.id,
+            a.applicationDate,
+            getShowroomLabel(db.showrooms, a.showroomId),
+            a.clientName,
+            a.vehicleNumber,
+            a.workType,
+            a.rtoOffice,
+            a.workStatus,
+          ]),
+        };
       }
-
-      case 'tractor-stock': {
-        const headers = ['Tractor ID', 'Reg Number', 'Brand', 'Model', 'Mfg Year', 'Stock Status', 'Price (₹)', 'Customer'];
-        const rows = db.tractors.map((t) => [t.id, t.registrationNumber, t.brand, t.model, t.manufacturingYear, t.stockStatus, formatINR(t.price), t.ownerName]);
-        return { title: 'Tractor Showroom Stock Inventory Report', headers, rows, summary: `Total Tractors: ${db.tractors.length}` };
-      }
-
-      case 'tractor-exchange': {
-        const headers = ['Exchange ID', 'Customer', 'Old Tractor & Model', 'Old Valuation (₹)', 'New Tractor', 'Difference Payable (₹)'];
-        const rows = db.exchanges.map((e) => [e.id, e.customerName, `${e.oldTractorNumber} (${e.oldTractorModel})`, formatINR(e.oldTractorValuation), e.newTractorModel, formatINR(e.exchangeDifferenceAmount)]);
-        return { title: 'Old Tractor Exchange & Valuation Report', headers, rows, summary: `Total Trade-ins: ${db.exchanges.length}` };
-      }
-
-      case 'loan-report': {
-        const headers = ['Loan ID', 'Customer Name', 'Tractor No', 'Finance Institution', 'Loan Amount (₹)', 'Net Credit (₹)', 'Status'];
-        const rows = db.loans.map((l) => [l.id, l.customerName, l.tractorNumber, l.financeCompany, formatINR(l.loanAmount), formatINR(l.netCreditAmount), l.loanStatus]);
-        return { title: 'Tractor Bank Finance & Disbursement Report', headers, rows, summary: `Total Loan Files: ${db.loans.length}` };
-      }
-
-      default:
-        return { title: 'Business Report', headers: [], rows: [], summary: '' };
     }
-  };
+  }, [selectedReport, db, scopedApps, reportMonth, todayStr]);
 
-  const payload = getReportPayload();
-
-  const handleExportPDF = () => {
-    exportGeneralReportPDF(payload.title, payload.headers, payload.rows, db.settings, payload.summary);
-  };
+  const reportTabs: { id: ReportId; label: string }[] = [
+    { id: 'showroom-rto', label: '1. Showroom RTO Summary' },
+    { id: 'client-history', label: '2. Client History' },
+    { id: 'pending-apps', label: '3. Pending Applications' },
+    { id: 'completed-apps', label: '4. Completed Applications' },
+    { id: 'missing-docs', label: '5. Missing Documents' },
+    { id: 'vehicle-docs', label: '6. Vehicle Validity' },
+    { id: 'monthly-rto', label: '7. Monthly RTO Report' },
+  ];
 
   return (
-    <div className="space-y-6 pb-12">
-      {/* Header Bar */}
-      <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-            <BarChart3 className="w-5 h-5 text-rose-600" />
-            <span>13. Automated Business & Compliance Reports Hub</span>
-          </h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            15 pre-configured automated intelligence reports with date filters, print views, and 1-click PDF download.
-          </p>
+    <div className="space-y-5">
+      <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-4 print:hidden">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 className="font-display text-lg font-bold text-slate-900">
+              RTO Operational & Compliance Reports
+            </h2>
+            <p className="text-xs text-slate-500">
+              Export formatted multi-showroom RTO reports to PDF, Excel (.xlsx), or print directly.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={onExportExcel}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-100"
+            >
+              <FileSpreadsheet className="h-4 w-4" />
+              <span>Export Full .XLSX</span>
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                exportGeneralReportPDF(
+                  reportPayload.title,
+                  reportPayload.columns,
+                  reportPayload.rows,
+                  db.settings,
+                  reportPayload.subtitle
+                )
+              }
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700"
+            >
+              <FileDown className="h-4 w-4" />
+              <span>Download PDF</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              <Printer className="h-4 w-4" />
+              <span>Print</span>
+            </button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleExportPDF}
-            className="flex items-center gap-1.5 bg-rose-600 hover:bg-rose-500 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-xs transition cursor-pointer"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Export Official PDF</span>
-          </button>
+        <div className="flex flex-wrap gap-2">
+          {reportTabs.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setSelectedReport(t.id)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                selectedReport === t.id
+                  ? 'bg-slate-900 text-white'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
+
+        {selectedReport === 'monthly-rto' && (
+          <div className="flex items-center gap-2 pt-1">
+            <label className="text-xs font-semibold text-slate-700">Select Month:</label>
+            <input
+              type="month"
+              value={reportMonth}
+              onChange={(e) => setReportMonth(e.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-mono"
+            />
+          </div>
+        )}
       </div>
 
-      {/* Main Layout: Left Report Selector + Right Preview */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Left Column: 15 Reports Navigation */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-3 space-y-1 h-fit">
-          <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-            Select Report Type
-          </div>
-          {reportList.map((rep) => {
-            const isSelected = activeReport === rep.id;
-            return (
-              <button
-                key={rep.id}
-                onClick={() => setActiveReport(rep.id)}
-                className={`w-full text-left px-3 py-2.5 rounded-lg text-xs transition flex flex-col cursor-pointer ${
-                  isSelected
-                    ? 'bg-rose-50 text-rose-900 font-bold border border-rose-200 shadow-xs'
-                    : 'text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                <span>{rep.label}</span>
-                <span className="text-[10px] font-normal text-slate-400 mt-0.5">{rep.desc}</span>
-              </button>
-            );
-          })}
+      {/* Report Table */}
+      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+        <div className="border-b border-slate-200 px-5 py-4">
+          <h3 className="font-display text-base font-bold text-slate-900">
+            {reportPayload.title}
+          </h3>
+          <p className="text-xs text-slate-500 mt-0.5">{reportPayload.subtitle}</p>
         </div>
 
-        {/* Right Column: Active Report View */}
-        <div className="lg:col-span-3 space-y-4">
-          <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-5">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 pb-4 gap-3">
-              <div>
-                <h3 className="text-lg font-bold text-slate-900">{payload.title}</h3>
-                <p className="text-xs text-slate-500 mt-0.5">{payload.summary}</p>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleExportPDF}
-                  className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-semibold shadow-xs cursor-pointer"
-                >
-                  <Printer className="w-3.5 h-3.5" />
-                  <span>Print View</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Render Tabular Report Preview */}
-            <div className="overflow-x-auto mt-4">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-900 text-white uppercase text-[10px] font-bold tracking-wider">
-                  <tr>
-                    {payload.headers.map((h, i) => (
-                      <th key={i} className="px-4 py-2.5">
-                        {h}
-                      </th>
+        {reportPayload.rows.length === 0 ? (
+          <div className="p-10 text-center text-sm text-slate-500">
+            No records available for this report.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs sm:text-sm">
+              <thead className="bg-slate-50 border-b border-slate-200 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <tr>
+                  {reportPayload.columns.map((col) => (
+                    <th key={col} className="px-4 py-3 whitespace-nowrap">
+                      {col}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {reportPayload.rows.map((row, idx) => (
+                  <tr key={idx} className="hover:bg-slate-50">
+                    {row.map((cell, cIdx) => (
+                      <td key={cIdx} className="px-4 py-2.5 text-slate-700">
+                        {cell}
+                      </td>
                     ))}
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {payload.rows.length === 0 ? (
-                    <tr>
-                      <td colSpan={payload.headers.length || 1} className="px-4 py-8 text-center text-slate-400">
-                        No records for this report period.
-                      </td>
-                    </tr>
-                  ) : (
-                    payload.rows.map((row, rIdx) => (
-                      <tr key={rIdx} className="hover:bg-slate-50 transition">
-                        {row.map((cell, cIdx) => (
-                          <td key={cIdx} className="px-4 py-2.5 whitespace-pre-line text-slate-700">
-                            {cell}
-                          </td>
-                        ))}
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+                ))}
+              </tbody>
+            </table>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
