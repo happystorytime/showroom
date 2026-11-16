@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { User } from 'firebase/auth';
-import { ShieldCheck, LogIn, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
+import { ShieldCheck, LogIn, AlertTriangle, CheckCircle2, Loader2, Mail, Lock, UserPlus } from 'lucide-react';
 import type {
   ApplicationHistoryEntry,
   ArchivedRecord,
@@ -25,28 +24,35 @@ import {
   saveUiPrefs,
   type AppDatabase,
 } from './utils/storage';
-import { googleSignIn, initAuth, logout } from './utils/auth';
 import {
-  clearAllTransactionalRecordsInFirestore,
-  clearArchiveInFirestore,
-  createDocumentRecordInFirestore,
-  deleteAndArchiveInFirestore,
-  deleteArchiveDocInFirestore,
-  deleteShowroomInFirestore,
+  googleSignIn,
+  initAuth,
+  logout,
+  signInWithEmail,
+  signUpWithEmail,
+  type AuthUser,
+} from './utils/auth';
+import { isSupabaseConfigured } from './utils/supabaseClient';
+import {
+  clearAllTransactionalRecordsInSupabase,
+  clearArchiveInSupabase,
+  createDocumentRecordInSupabase,
+  deleteAndArchiveInSupabase,
+  deleteArchiveRecordInSupabase,
+  deleteShowroomInSupabase,
   ensureUserWorkspaceAndSeed,
-  importBackupToFirestore,
-  restoreFromArchiveInFirestore,
-  saveEntryToFirestore,
-  saveSettingsInFirestore,
+  importBackupToSupabase,
+  restoreFromArchiveInSupabase,
+  saveEntryToSupabase,
+  saveSettingsInSupabase,
   subscribeToWorkspace,
-  testFirestoreConnection,
-  updateApplicationInFirestore,
-  updateApplicationStatusWithHistoryInFirestore,
-  updateDocumentRecordInFirestore,
-  upsertClientInFirestore,
-  upsertShowroomInFirestore,
-  upsertVehicleInFirestore,
-} from './utils/firestoreService';
+  updateApplicationInSupabase,
+  updateApplicationStatusWithHistoryInSupabase,
+  updateDocumentRecordInSupabase,
+  upsertClientInSupabase,
+  upsertShowroomInSupabase,
+  upsertVehicleInSupabase,
+} from './utils/supabaseService';
 import {
   evaluateApplicationChecklist,
   getDocumentAlertStatus,
@@ -71,9 +77,14 @@ import { GoogleSheetsSyncModal } from './components/GoogleSheetsSyncModal';
 import { VbaDownloadModal } from './components/VbaDownloadModal';
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [authInitialized, setAuthInitialized] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authFullName, setAuthFullName] = useState('');
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
 
   const [db, setDb] = useState<AppDatabase>(() => createEmptyWorkspace());
@@ -107,7 +118,6 @@ export default function App() {
   };
 
   useEffect(() => {
-    testFirestoreConnection();
     const unsub = initAuth((authUser) => {
       setUser(authUser);
       setAuthInitialized(true);
@@ -141,7 +151,7 @@ export default function App() {
         );
       } catch (err) {
         if (active) {
-          setSyncError(err instanceof Error ? err.message : 'Failed to load cloud workspace.');
+          setSyncError(err instanceof Error ? err.message : 'Failed to load Supabase workspace.');
           setWorkspaceReady(true);
         }
       }
@@ -153,19 +163,45 @@ export default function App() {
     };
   }, [user]);
 
-  const handleSignIn = async () => {
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isSupabaseConfigured) return;
+    if (!authEmail.trim() || !authPassword) {
+      setAuthError('Please enter both email address and password.');
+      return;
+    }
     setAuthLoading(true);
     setAuthError(null);
+    setAuthNotice(null);
     try {
-      const res = await googleSignIn();
-      if (!res) {
-        setAuthError(
-          'Sign-in popup was closed before completing Google authentication. Click "Sign in with Google Workspace" to try again.'
-        );
+      if (authMode === 'signin') {
+        await signInWithEmail(authEmail, authPassword);
+      } else {
+        const res = await signUpWithEmail(authEmail, authPassword, authFullName);
+        if (res.needsEmailConfirmation) {
+          setAuthNotice(
+            'Account created. Check your email inbox to confirm your address, then sign in.'
+          );
+          setAuthMode('signin');
+        }
       }
     } catch (err) {
+      setAuthError(err instanceof Error ? err.message : 'Authentication failed. Please try again.');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    if (!isSupabaseConfigured) return;
+    setAuthLoading(true);
+    setAuthError(null);
+    setAuthNotice(null);
+    try {
+      await googleSignIn();
+    } catch (err) {
       setAuthError(
-        err instanceof Error ? err.message : 'Google Sign-In failed. Please try again.'
+        err instanceof Error ? err.message : 'Google OAuth sign-in failed. Please try again.'
       );
     } finally {
       setAuthLoading(false);
@@ -245,26 +281,26 @@ export default function App() {
       actorEmail: user.email || 'agent@rto.local',
       changedAt: new Date().toISOString(),
     };
-    await saveEntryToFirestore(user.uid, { ...entry, historyEntry });
+    await saveEntryToSupabase(user.uid, { ...entry, historyEntry });
     showToast('success', `Saved RTO Application ${entry.application.id}`);
   };
 
   const handleSaveShowroom = async (showroom: Showroom, isUpdate: boolean) => {
     if (!user) return;
-    await upsertShowroomInFirestore(user.uid, showroom, isUpdate);
+    await upsertShowroomInSupabase(user.uid, showroom);
     showToast('success', `${isUpdate ? 'Updated' : 'Added'} showroom ${showroom.name}`);
   };
 
   const handleDeleteShowroom = async (showroomId: string) => {
     if (!user) return;
-    await deleteShowroomInFirestore(user.uid, showroomId);
+    await deleteShowroomInSupabase(user.uid, showroomId);
     if (activeShowroomId === showroomId) handleShowroomChange('ALL');
     showToast('success', 'Showroom deleted.');
   };
 
   const handleSaveClient = async (client: Client, isUpdate: boolean) => {
     if (!user) return;
-    await upsertClientInFirestore(user.uid, client, isUpdate);
+    await upsertClientInSupabase(user.uid, client);
     showToast('success', `${isUpdate ? 'Updated' : 'Registered'} client ${client.name}`);
   };
 
@@ -280,13 +316,13 @@ export default function App() {
       deletedAt: new Date().toLocaleString(),
       deletedBy: user.email || 'RTO Agent',
     };
-    await deleteAndArchiveInFirestore(user.uid, 'clients', client.id, arc);
+    await deleteAndArchiveInSupabase(user.uid, 'clients', client.id, arc);
     showToast('success', `Client ${client.name} moved to Safety Archive.`);
   };
 
   const handleSaveVehicle = async (vehicle: Vehicle, isUpdate: boolean) => {
     if (!user) return;
-    await upsertVehicleInFirestore(user.uid, vehicle, isUpdate);
+    await upsertVehicleInSupabase(user.uid, vehicle);
     showToast('success', `${isUpdate ? 'Updated' : 'Enrolled'} vehicle ${vehicle.vehicleNumber}`);
   };
 
@@ -302,7 +338,7 @@ export default function App() {
       deletedAt: new Date().toLocaleString(),
       deletedBy: user.email || 'RTO Agent',
     };
-    await deleteAndArchiveInFirestore(user.uid, 'vehicles', vehicle.id, arc);
+    await deleteAndArchiveInSupabase(user.uid, 'vehicles', vehicle.id, arc);
     showToast('success', `Vehicle ${vehicle.vehicleNumber} moved to Safety Archive.`);
   };
 
@@ -323,7 +359,7 @@ export default function App() {
           changedAt: new Date().toISOString(),
         }
       : undefined;
-    await updateApplicationInFirestore(user.uid, app, historyEntry);
+    await updateApplicationInSupabase(user.uid, app, historyEntry);
     showToast('success', `Updated application ${app.id}`);
   };
 
@@ -347,7 +383,7 @@ export default function App() {
       changedAt: new Date().toISOString(),
     };
     const completionDate = nextStatus === 'Completed' ? getTodayDateStr() : undefined;
-    await updateApplicationStatusWithHistoryInFirestore(
+    await updateApplicationStatusWithHistoryInSupabase(
       user.uid,
       app.id,
       nextStatus,
@@ -369,19 +405,19 @@ export default function App() {
       deletedAt: new Date().toLocaleString(),
       deletedBy: user.email || 'RTO Agent',
     };
-    await deleteAndArchiveInFirestore(user.uid, 'applications', app.id, arc);
+    await deleteAndArchiveInSupabase(user.uid, 'applications', app.id, arc);
     showToast('success', `Application ${app.id} moved to Safety Archive.`);
   };
 
   const handleCreateDocument = async (docRec: DocumentRecord) => {
     if (!user) return;
-    await createDocumentRecordInFirestore(user.uid, docRec);
+    await createDocumentRecordInSupabase(user.uid, docRec);
     showToast('success', `Uploaded ${docRec.documentType} for ${docRec.vehicleNumber}`);
   };
 
   const handleUpdateDocument = async (docRec: DocumentRecord) => {
     if (!user) return;
-    await updateDocumentRecordInFirestore(user.uid, docRec);
+    await updateDocumentRecordInSupabase(user.uid, docRec);
     showToast('success', `Updated document ${docRec.id}`);
   };
 
@@ -397,46 +433,43 @@ export default function App() {
       deletedAt: new Date().toLocaleString(),
       deletedBy: user.email || 'RTO Agent',
     };
-    await deleteAndArchiveInFirestore(user.uid, 'documents', docRec.id, arc);
+    await deleteAndArchiveInSupabase(user.uid, 'documents', docRec.id, arc);
     showToast('success', `Document ${docRec.id} deleted and archived.`);
   };
 
   const handleRestoreArchive = async (rec: ArchivedRecord) => {
     if (!user) return;
-    await restoreFromArchiveInFirestore(user.uid, rec);
+    await restoreFromArchiveInSupabase(user.uid, rec);
     showToast('success', `Restored ${rec.entityType} ${rec.entityId}`);
   };
 
   const handleDeleteArchiveForever = async (archiveId: string) => {
     if (!user) return;
-    await deleteArchiveDocInFirestore(user.uid, archiveId);
+    await deleteArchiveRecordInSupabase(user.uid, archiveId);
     showToast('success', 'Archived item permanently deleted.');
   };
 
   const handleClearArchive = async () => {
     if (!user) return;
-    await clearArchiveInFirestore(
-      user.uid,
-      db.archive.map((a) => a.archiveId)
-    );
+    await clearArchiveInSupabase(user.uid);
     showToast('success', 'Safety archive emptied.');
   };
 
   const handleUpdateSettings = async (settings: SystemSettings) => {
     if (!user) return;
-    await saveSettingsInFirestore(user.uid, settings);
+    await saveSettingsInSupabase(user.uid, settings);
     showToast('success', 'Settings updated.');
   };
 
   const handleImportDatabase = async (newDb: AppDatabase) => {
     if (!user) return;
-    await importBackupToFirestore(user.uid, newDb);
-    showToast('success', 'JSON backup restored to Firestore.');
+    await importBackupToSupabase(user.uid, newDb);
+    showToast('success', 'JSON backup restored to Supabase.');
   };
 
   const handleClearAllRecords = async () => {
     if (!user) return;
-    await clearAllTransactionalRecordsInFirestore(user.uid);
+    await clearAllTransactionalRecordsInSupabase(user.uid);
     showToast('success', 'All transactional records cleared.');
   };
 
@@ -452,11 +485,11 @@ export default function App() {
     );
   }
 
-  // Auth Gate: Sign-In Screen
+  // Auth Gate: Sign-In Screen (Supabase Auth)
   if (!user) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
-        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-sm space-y-6">
+        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-sm space-y-5">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-white">
               <ShieldCheck className="h-6 w-6" />
@@ -477,9 +510,31 @@ export default function App() {
               <li>Manage 2–3+ partner showrooms from one console</li>
               <li>One common client & vehicle directory across showrooms</li>
               <li>13 Karnataka RTO work categories & status history logs</li>
-              <li>Firebase Storage document uploads, checklists & Excel/PDF exports</li>
+              <li>Supabase PostgreSQL database, Storage uploads & Excel/PDF exports</li>
             </ul>
           </div>
+
+          {!isSupabaseConfigured && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-xs text-amber-900 space-y-1.5">
+              <div className="flex items-center gap-1.5 font-semibold">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
+                <span>Supabase Environment Setup Required</span>
+              </div>
+              <p className="leading-relaxed text-amber-800">
+                Configure <code className="font-mono font-semibold">VITE_SUPABASE_URL</code> and{' '}
+                <code className="font-mono font-semibold">VITE_SUPABASE_ANON_KEY</code> in{' '}
+                <code className="font-mono">.env</code> (or AI Studio Secrets), and run{' '}
+                <code className="font-mono">supabase/schema.sql</code> in your Supabase SQL Editor.
+              </p>
+            </div>
+          )}
+
+          {authNotice && (
+            <div className="flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-xs text-emerald-800">
+              <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>{authNotice}</span>
+            </div>
+          )}
 
           {authError && (
             <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-xs text-red-700">
@@ -488,18 +543,129 @@ export default function App() {
             </div>
           )}
 
+          <div className="flex rounded-lg border border-slate-200 bg-slate-100 p-1 text-xs font-semibold">
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode('signin');
+                setAuthError(null);
+              }}
+              className={`flex-1 rounded-md py-1.5 transition-colors ${
+                authMode === 'signin'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Sign In
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode('signup');
+                setAuthError(null);
+              }}
+              className={`flex-1 rounded-md py-1.5 transition-colors ${
+                authMode === 'signup'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Create Account
+            </button>
+          </div>
+
+          <form onSubmit={handleEmailAuth} className="space-y-3">
+            {authMode === 'signup' && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Agent / Agency Name
+                </label>
+                <input
+                  type="text"
+                  value={authFullName}
+                  onChange={(e) => setAuthFullName(e.target.value)}
+                  placeholder="e.g. Sri Basaveshwara RTO Services"
+                  disabled={!isSupabaseConfigured || authLoading}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none disabled:bg-slate-100"
+                />
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Email Address
+              </label>
+              <div className="relative">
+                <Mail className="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="email"
+                  required
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  placeholder="agent@example.com"
+                  disabled={!isSupabaseConfigured || authLoading}
+                  className="w-full rounded-lg border border-slate-300 pl-9 pr-3 py-2 text-sm focus:border-blue-500 focus:outline-none disabled:bg-slate-100"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Password
+              </label>
+              <div className="relative">
+                <Lock className="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder="Minimum 6 characters"
+                  disabled={!isSupabaseConfigured || authLoading}
+                  className="w-full rounded-lg border border-slate-300 pl-9 pr-3 py-2 text-sm focus:border-blue-500 focus:outline-none disabled:bg-slate-100"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={!isSupabaseConfigured || authLoading}
+              className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 transition-colors disabled:opacity-50"
+            >
+              {authLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : authMode === 'signin' ? (
+                <LogIn className="h-4 w-4" />
+              ) : (
+                <UserPlus className="h-4 w-4" />
+              )}
+              <span>
+                {authLoading
+                  ? 'Please wait...'
+                  : authMode === 'signin'
+                    ? 'Sign in with Email'
+                    : 'Create Supabase Account'}
+              </span>
+            </button>
+          </form>
+
+          <div className="relative flex items-center py-1">
+            <div className="flex-grow border-t border-slate-200" />
+            <span className="mx-3 text-[11px] font-medium uppercase tracking-wider text-slate-400">
+              or
+            </span>
+            <div className="flex-grow border-t border-slate-200" />
+          </div>
+
           <button
             type="button"
-            disabled={authLoading}
-            onClick={handleSignIn}
-            className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-800 transition-colors disabled:opacity-60"
+            disabled={!isSupabaseConfigured || authLoading}
+            onClick={handleGoogleSignIn}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-800 hover:bg-slate-50 transition-colors disabled:opacity-50"
           >
-            {authLoading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <LogIn className="h-4 w-4" />
-            )}
-            <span>{authLoading ? 'Signing in...' : 'Sign in with Google Workspace'}</span>
+            <LogIn className="h-4 w-4" />
+            <span>Continue with Google (Supabase OAuth)</span>
           </button>
         </div>
       </div>

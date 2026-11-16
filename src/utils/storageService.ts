@@ -1,11 +1,7 @@
-import {
-  ref,
-  uploadBytesResumable,
-  getDownloadURL,
-  deleteObject,
-} from 'firebase/storage';
-import { firebaseStorage } from './auth';
+import { requireSupabase } from './supabaseClient';
 import { validateUploadFile } from './pureCalculations';
+
+export const SUPABASE_STORAGE_BUCKET = 'rto-documents';
 
 export interface UploadedFileMetadata {
   fileName: string;
@@ -36,31 +32,42 @@ export async function uploadDocumentFile(
     throw new Error(validation.error || 'Invalid upload file.');
   }
 
+  const client = requireSupabase();
   const safeName = sanitizeFileName(file.name);
   const storagePath = `users/${uid}/documents/${docId}_${Date.now()}_${safeName}`;
-  const storageRef = ref(firebaseStorage, storagePath);
 
-  const uploadTask = uploadBytesResumable(storageRef, file, {
-    contentType: file.type || 'application/octet-stream',
-  });
+  if (onProgress) onProgress(15);
 
-  await new Promise<void>((resolve, reject) => {
-    uploadTask.on(
-      'state_changed',
-      (snapshot) => {
-        if (onProgress && snapshot.totalBytes > 0) {
-          const pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
-          onProgress(pct);
-        }
-      },
-      (error) => {
-        reject(error);
-      },
-      () => resolve()
+  const { error: uploadError } = await client.storage
+    .from(SUPABASE_STORAGE_BUCKET)
+    .upload(storagePath, file, {
+      contentType: file.type || 'application/octet-stream',
+      upsert: true,
+    });
+
+  if (uploadError) {
+    throw new Error(
+      uploadError.message ||
+        `Upload failed. Ensure the '${SUPABASE_STORAGE_BUCKET}' bucket and Storage RLS policies exist in Supabase.`
     );
-  });
+  }
 
-  const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
+  if (onProgress) onProgress(75);
+
+  // Use a 1-year signed URL for private bucket access; fallback to public URL if bucket is public
+  const { data: signedData, error: signedError } = await client.storage
+    .from(SUPABASE_STORAGE_BUCKET)
+    .createSignedUrl(storagePath, 60 * 60 * 24 * 365);
+
+  let downloadUrl = signedData?.signedUrl || '';
+  if (signedError || !downloadUrl) {
+    const { data: pubData } = client.storage
+      .from(SUPABASE_STORAGE_BUCKET)
+      .getPublicUrl(storagePath);
+    downloadUrl = pubData.publicUrl;
+  }
+
+  if (onProgress) onProgress(100);
 
   return {
     fileName: file.name,
@@ -74,14 +81,12 @@ export async function uploadDocumentFile(
 
 export async function deleteDocumentFile(storagePath?: string): Promise<void> {
   if (!storagePath || !storagePath.trim()) return;
-  try {
-    const fileRef = ref(firebaseStorage, storagePath);
-    await deleteObject(fileRef);
-  } catch (err: unknown) {
-    const code = (err as { code?: string })?.code;
-    if (code === 'storage/object-not-found') {
-      return;
-    }
-    throw err;
+  const client = requireSupabase();
+  const { error } = await client.storage
+    .from(SUPABASE_STORAGE_BUCKET)
+    .remove([storagePath]);
+
+  if (error && !error.message.toLowerCase().includes('not found')) {
+    throw new Error(error.message || 'Failed to delete file from Supabase Storage.');
   }
 }

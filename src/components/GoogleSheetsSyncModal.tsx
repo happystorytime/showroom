@@ -28,19 +28,11 @@ export const GoogleSheetsSyncModal: React.FC<GoogleSheetsSyncModalProps> = ({ db
     try {
       let token = await getAccessToken();
       if (!token) {
-        const res = await googleSheetsSignIn();
-        if (!res) {
-          setErrorMsg(
-            'Google OAuth popup was closed before granting Sheets & Drive permissions. Please click Sync Now and approve access.'
-          );
-          return;
-        }
-        token = res.accessToken || null;
-      }
-      if (!token) {
-        throw new Error(
-          'Google Sheets OAuth access token not granted. Please approve Sheets & Drive permissions.'
+        await googleSheetsSignIn();
+        setErrorMsg(
+          'Redirecting to Google OAuth to grant Sheets & Drive access. After returning, click Sync Now again.'
         );
+        return;
       }
       const res = await createAndSyncGoogleSpreadsheet(
         token,

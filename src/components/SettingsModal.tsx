@@ -358,7 +358,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div>
                   <h4 className="text-sm font-bold text-slate-900">Restore from JSON Backup</h4>
                   <p className="text-xs text-slate-500">
-                    Imports and writes records into your cloud Firestore workspace.
+                    Imports and writes records into your Supabase PostgreSQL workspace.
                   </p>
                 </div>
                 <input
@@ -406,7 +406,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               Confirm Workspace Reset
             </h3>
             <p className="mt-1.5 text-sm text-slate-600">
-              This will permanently clear all Clients, Vehicles, RTO Applications, Documents, and Archive records in Firestore. Export a JSON backup first if needed.
+              This will permanently clear all Clients, Vehicles, RTO Applications, Documents, and Archive records in Supabase. Export a JSON backup first if needed.
             </p>
             <div className="mt-5 flex justify-end gap-2">
               <button

@@ -1,87 +1,172 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, signOut } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
-import { getStorage } from 'firebase/storage';
-import firebaseConfig from '../../firebase-applet-config.json';
+import type { Session, User } from '@supabase/supabase-js';
+import { isSupabaseConfigured, requireSupabase, supabase } from './supabaseClient';
 import { classifyAuthError } from './pureCalculations';
 
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-export const auth = getAuth(app);
-export const firestoreDb = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const firebaseStorage = getStorage(app);
-
-// Keep basic Workspace sign-in lightweight (no extra Sheets/Drive consent prompt during initial login)
-const loginProvider = new GoogleAuthProvider();
-loginProvider.setCustomParameters({ prompt: 'select_account' });
-
-// Incremental OAuth provider used only when the user explicitly syncs to Google Sheets
-const sheetsProvider = new GoogleAuthProvider();
-sheetsProvider.addScope('https://www.googleapis.com/auth/spreadsheets');
-sheetsProvider.addScope('https://www.googleapis.com/auth/drive.file');
-sheetsProvider.setCustomParameters({ prompt: 'consent' });
-
-let cachedAccessToken: string | null = null;
-let pendingSignIn: Promise<{ user: User; accessToken: string | null } | null> | null = null;
-
-export const initAuth = (
-  onAuthChange: (user: User | null, token: string | null) => void
-) => {
-  return onAuthStateChanged(auth, (user: User | null) => {
-    if (user) {
-      onAuthChange(user, cachedAccessToken);
-    } else {
-      cachedAccessToken = null;
-      onAuthChange(null, null);
-    }
-  });
-};
-
-async function runPopupSignIn(
-  provider: GoogleAuthProvider
-): Promise<{ user: User; accessToken: string | null } | null> {
-  if (pendingSignIn) {
-    return pendingSignIn;
-  }
-
-  pendingSignIn = (async () => {
-    try {
-      const result = await signInWithPopup(auth, provider);
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-      if (credential?.accessToken) {
-        cachedAccessToken = credential.accessToken;
-      }
-      return { user: result.user, accessToken: cachedAccessToken };
-    } catch (error) {
-      const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
-      const info = classifyAuthError(error, hostname);
-      if (info.isUserCancelled) {
-        return null;
-      }
-      if (info.code === 'auth/unknown') {
-        console.warn('Sign in issue:', info.code, info.message);
-      }
-      throw new Error(info.message);
-    } finally {
-      pendingSignIn = null;
-    }
-  })();
-
-  return pendingSignIn;
+export interface AuthUser {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
 }
 
-export const googleSignIn = async (): Promise<{ user: User; accessToken: string | null } | null> => {
-  return runPopupSignIn(loginProvider);
+let cachedProviderToken: string | null = null;
+
+function mapSupabaseUser(user: User | null): AuthUser | null {
+  if (!user) return null;
+  const meta = (user.user_metadata || {}) as Record<string, unknown>;
+  const displayName =
+    (typeof meta.full_name === 'string' && meta.full_name) ||
+    (typeof meta.name === 'string' && meta.name) ||
+    user.email?.split('@')[0] ||
+    null;
+
+  return {
+    uid: user.id,
+    email: user.email || null,
+    displayName,
+  };
+}
+
+function captureSessionToken(session: Session | null) {
+  if (session?.provider_token) {
+    cachedProviderToken = session.provider_token;
+  } else if (!session) {
+    cachedProviderToken = null;
+  }
+}
+
+export const initAuth = (
+  onAuthChange: (user: AuthUser | null, token: string | null) => void
+) => {
+  if (!isSupabaseConfigured || !supabase) {
+    onAuthChange(null, null);
+    return () => {};
+  }
+
+  let active = true;
+
+  supabase.auth
+    .getSession()
+    .then(({ data }) => {
+      if (!active) return;
+      captureSessionToken(data.session);
+      onAuthChange(mapSupabaseUser(data.session?.user || null), cachedProviderToken);
+    })
+    .catch(() => {
+      if (!active) return;
+      onAuthChange(null, null);
+    });
+
+  const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+    captureSessionToken(session);
+    onAuthChange(mapSupabaseUser(session?.user || null), cachedProviderToken);
+  });
+
+  return () => {
+    active = false;
+    sub.subscription.unsubscribe();
+  };
 };
 
-export const googleSheetsSignIn = async (): Promise<{ user: User; accessToken: string | null } | null> => {
-  return runPopupSignIn(sheetsProvider);
+export const signInWithEmail = async (
+  email: string,
+  password: string
+): Promise<AuthUser> => {
+  const client = requireSupabase();
+  const { data, error } = await client.auth.signInWithPassword({
+    email: email.trim(),
+    password,
+  });
+  if (error) {
+    throw new Error(error.message || 'Invalid email or password.');
+  }
+  const mapped = mapSupabaseUser(data.user);
+  if (!mapped) {
+    throw new Error('Authentication succeeded without a valid user profile.');
+  }
+  return mapped;
+};
+
+export const signUpWithEmail = async (
+  email: string,
+  password: string,
+  fullName?: string
+): Promise<{ user: AuthUser | null; needsEmailConfirmation: boolean }> => {
+  const client = requireSupabase();
+  const { data, error } = await client.auth.signUp({
+    email: email.trim(),
+    password,
+    options: {
+      data: fullName?.trim() ? { full_name: fullName.trim() } : undefined,
+      emailRedirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+    },
+  });
+  if (error) {
+    throw new Error(error.message || 'Could not create account.');
+  }
+  return {
+    user: mapSupabaseUser(data.user),
+    needsEmailConfirmation: !data.session,
+  };
+};
+
+export const googleSignIn = async (): Promise<{
+  user: AuthUser | null;
+  accessToken: string | null;
+} | null> => {
+  const client = requireSupabase();
+  const redirectTo = typeof window !== 'undefined' ? window.location.origin : undefined;
+  const { error } = await client.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      redirectTo,
+      queryParams: {
+        prompt: 'select_account',
+      },
+    },
+  });
+  if (error) {
+    const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
+    const info = classifyAuthError(error, hostname);
+    if (info.isUserCancelled) return null;
+    throw new Error(info.message);
+  }
+  return null;
+};
+
+export const googleSheetsSignIn = async (): Promise<{
+  user: AuthUser | null;
+  accessToken: string | null;
+} | null> => {
+  const client = requireSupabase();
+  const redirectTo = typeof window !== 'undefined' ? window.location.origin : undefined;
+  const { error } = await client.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      redirectTo,
+      scopes: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file',
+      queryParams: {
+        access_type: 'offline',
+        prompt: 'consent',
+      },
+    },
+  });
+  if (error) {
+    throw new Error(error.message || 'Google Workspace OAuth authorization failed.');
+  }
+  return null;
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
-  return cachedAccessToken;
+  if (cachedProviderToken) return cachedProviderToken;
+  if (!supabase) return null;
+  const { data } = await supabase.auth.getSession();
+  captureSessionToken(data.session);
+  return cachedProviderToken;
 };
 
 export const logout = async () => {
-  await signOut(auth);
-  cachedAccessToken = null;
+  if (supabase) {
+    await supabase.auth.signOut();
+  }
+  cachedProviderToken = null;
 };

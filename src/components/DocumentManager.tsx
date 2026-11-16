@@ -285,7 +285,7 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
       setUploadError(
         err instanceof Error
           ? err.message
-          : 'Upload failed. Ensure Firebase Storage is enabled in your Firebase project.'
+          : 'Upload failed. Ensure the rto-documents bucket exists in Supabase Storage.'
       );
     } finally {
       setUploading(false);
@@ -321,7 +321,7 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
               Document Upload & Compliance Vault ({scopedDocs.length})
             </h2>
             <p className="text-xs text-slate-500">
-              Upload real PDF, JPG, or PNG files to Firebase Storage, verify checklists, preview, replace, or download.
+              Upload real PDF, JPG, or PNG files to Supabase Storage, verify checklists, preview, replace, or download.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -924,7 +924,7 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
               Delete & Archive Document {deleteTarget.id}?
             </h3>
             <p className="mt-1.5 text-sm text-slate-600">
-              This removes the uploaded file from Firebase Storage and archives metadata for{' '}
+              This removes the uploaded file from Supabase Storage and archives metadata for{' '}
               <strong>{deleteTarget.documentType}</strong> ({deleteTarget.vehicleNumber}).
             </p>
             <div className="mt-5 flex justify-end gap-2">
